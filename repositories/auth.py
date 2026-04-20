@@ -1,29 +1,12 @@
 from httpx import ConnectTimeout, HTTPError
 
 from httpxC.http_client import http_client
-from schemas.user import UserToken, AuthorizedUser
+from schemas.user import AuthorizedUser
 from core.config import settings
 from core.retry import build_http_retry
 
 
-@build_http_retry(attempts=1)
-async def login_user(username: str, password: str) -> UserToken | bool:
-    auth_endpoint: str = f"{settings.auth_api_url}/api/v1/auth/login"
-    response = await http_client.post(
-        auth_endpoint,
-        json={"email": username, "password": password},
-    )
-    response.raise_for_status()
-    data = response.json()
-
-    user_token = UserToken(
-        token=data.get("token", "fake-token"),
-    )
-
-    return user_token
-
-
-@build_http_retry(attempts=1)
+@build_http_retry(attempts=2)
 async def get_user_from_token(token: str) -> AuthorizedUser | None:
     auth_endpoint = f"{settings.auth_api_url}/api/v1/auth/me"
     headers = {"Authorization": f"Bearer {token}"}
