@@ -1,3 +1,4 @@
+from fastapi import HTTPException, status
 from httpx import ConnectTimeout, HTTPError
 
 from httpxC.http_client import http_client
@@ -20,11 +21,17 @@ async def get_user_from_token(token: str) -> AuthorizedUser | None:
         response.raise_for_status()
         data = response.json()
 
+        if not data.get("is_admin", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Unauthorized",
+            )
+
         return AuthorizedUser(
             id=str(data.get("id", "")),
             username=data.get("username", ""),
             email=data.get("email", ""),
-            is_admin=False,
+            is_admin=data.get("is_admin", False),
         )
     except ConnectTimeout:
         return None
