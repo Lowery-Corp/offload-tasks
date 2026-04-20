@@ -1,19 +1,25 @@
 services:
   api:
-    build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
     ports:
       - "8001:8000"
+    volumes:
+      - .:/app
     depends_on:
       offload-task-cache:
         condition: service_healthy
-    environment:
-      CELERY_BROKER_URL: redis://offload-task-cache:6379/0
-      CELERY_RESULT_BACKEND: redis://offload-task-cache:6379/1
-
   worker:
-    build: .
-    command: celery -A app.worker.celery_app worker --loglevel=info
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    command: celery -A worker.celery_app worker --loglevel=info
     depends_on:
       offload-task-cache:
         condition: service_healthy
@@ -21,17 +27,17 @@ services:
       CELERY_BROKER_URL: redis://offload-task-cache:6379/0
       CELERY_RESULT_BACKEND: redis://offload-task-cache:6379/1
 
-  flower:
-    build: .
-    command: celery -A app.worker.celery_app flower --port=5555
-    ports:
-      - "5555:5555"
-    depends_on:
-      offload-task-cache:
-        condition: service_healthy
-    environment:
-      CELERY_BROKER_URL: redis://offload-task-cache:6379/0
-      CELERY_RESULT_BACKEND: redis://offload-task-cache:6379/1
+  # flower:
+  #   build: .
+  #   command: celery -A app.worker.celery_app flower --port=5555
+  #   ports:
+  #     - "5555:5555"
+  #   depends_on:
+  #     offload-task-cache:
+  #       condition: service_healthy
+  #   environment:
+  #     CELERY_BROKER_URL: redis://offload-task-cache:6379/0
+  #     CELERY_RESULT_BACKEND: redis://offload-task-cache:6379/1
 
   offload-task-cache:
     image: redis:latest

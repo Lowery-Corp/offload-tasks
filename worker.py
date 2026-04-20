@@ -1,8 +1,9 @@
-import os
-from celery import Celery
+from celery import Celery # type: ignore
 
-CELERY_BROKER = f"""{os.getenv("REDIS_URL", None)}/0"""
-CELERY_BROKER_BACKEND = f"""{os.getenv("REDIS_URL", None)}/1"""
+from core.config import settings
+
+CELERY_BROKER = f"""{settings.redis_url}/0"""
+CELERY_BROKER_BACKEND = f"""{settings.redis_url}/1"""
 
 celery_app = Celery(
     "Offload Tasks",

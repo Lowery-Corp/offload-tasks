@@ -1,7 +1,7 @@
 # app/tasks/document_tasks.py
 import time
 from typing import Any
-from app.worker import celery_app
+from worker import celery_app
 
 @celery_app.task(name="app.tasks.process_document")
 def process_document(document_id: int) -> dict[str, Any]:
