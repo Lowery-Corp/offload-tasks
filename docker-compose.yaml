@@ -7,13 +7,19 @@ services:
     command: python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
       - .env
-    ports:
-      - "8001:8000"
     volumes:
       - .:/app
+    ports:
+      - "8001:8000"
     depends_on:
       offload-task-cache:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   worker:
     build:
       context: .
