@@ -19,6 +19,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: always
 
   worker:
     build:
@@ -26,6 +27,7 @@ services:
       dockerfile: Dockerfile
     working_dir: /app
     command: celery -A worker.celery_app worker --loglevel=info
+    restart: always
     depends_on:
       offload-task-cache:
         condition: service_healthy
@@ -44,6 +46,7 @@ services:
   #   environment:
   #     CELERY_BROKER_URL: redis://offload-task-cache:6379/0
   #     CELERY_RESULT_BACKEND: redis://offload-task-cache:6379/1
+  #   restart: always
 
   offload-task-cache:
     image: redis:latest
@@ -52,6 +55,7 @@ services:
     volumes:
       - offload-task-cache:/data
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: always
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
