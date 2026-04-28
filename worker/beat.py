@@ -7,20 +7,16 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.health.health_check",
         "schedule": 60.0,
     },
-    "cleanup-old-results-daily": {
+    "health-cleanup-old-results-daily": {
         "task": "tasks.health.cleanup_old_results",
         "schedule": crontab(hour=0, minute=0),
     },
-}
-
-celery_app.conf.beat_schedule = {
-    "health-check-every-minute": {
-        "task": "tasks.health.health_check",
-        "schedule": 60.0,
+    "file-check-every-ten-secs": {
+        "task": "tasks.file_tasks.process_document",
+        "schedule": 10.0,
     },
-    "cleanup-old-results-daily": {
-        "task": "tasks.health.cleanup_old_results",
+    "file-cleanup-old-results-daily": {
+        "task": "tasks.file_tasks.cleanup_old_results",
         "schedule": crontab(hour=0, minute=0),
     },
 }
-

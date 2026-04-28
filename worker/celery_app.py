@@ -18,6 +18,7 @@ celery_app = Celery(
     backend=CELERY_RESULT_BACKEND,
     include=[
         "tasks.health",
+        "tasks.file_tasks",
     ],
 )
 

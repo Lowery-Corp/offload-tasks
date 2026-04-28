@@ -9,7 +9,6 @@ def health_check() -> dict[str, Any]:
     return {
         "status": "ok",
         "message": "Celery worker is running",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
