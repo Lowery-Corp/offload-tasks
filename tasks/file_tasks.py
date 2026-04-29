@@ -1,13 +1,14 @@
 # tasks/file_tasks.py
 
 from typing import Any
-from datetime import datetime, timezone
 
 from worker.celery_app import celery_app
 
 
 @celery_app.task(name="tasks.file_tasks.process_document")
 def process_document() -> dict[str, Any]:
+
+
     return {
         "ok": True,
         "message": "Document processed successfully",
