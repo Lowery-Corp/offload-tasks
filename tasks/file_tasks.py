@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from worker.celery_app import celery_app
+from repositories.minio import get_file_from_minio  # noqa: F401
 
 JOB_BATCH_SIZE = int(os.getenv("FILE_JOB_BATCH_SIZE", "10"))
 CLAIMABLE_STATUSES = ("pending", "queued")
@@ -153,6 +154,8 @@ def retrieve_jobs(auth_token: str) -> list[dict[str, Any]]:
 def process_document() -> dict[str, Any]:
     auth_token = get_auth_token()
     jobs = retrieve_jobs(auth_token)
+    # for job in jobs:
+        # bucket_name
     print(f"Retrieved {len(jobs)} file jobs from CRUD endpoint", flush=True)
 
     return {

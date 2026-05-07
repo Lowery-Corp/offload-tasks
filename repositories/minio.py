@@ -1,19 +1,28 @@
+import os
+
 from functools import lru_cache
 from io import BytesIO
 from minio import Minio
 from minio.deleteobjects import DeleteObject
 from typing import Any
 
-from core.config import settings
+MINIO_URL = os.getenv("MINIO_API_URL", None)
+MINIO_ROOT_USER = os.getenv("MINIO_ROOT_USER", None)
+MINIO_ROOT_PASSWORD = os.getenv("MINIO_ROOT_PASSWORD", None)
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
 
 @lru_cache
 def get_minio_client() -> Minio:
+    if MINIO_URL is None or MINIO_ROOT_USER is None or MINIO_ROOT_PASSWORD is None:
+        raise ValueError(
+            "MINIO_API_URL, MINIO_ROOT_USER, and MINIO_ROOT_PASSWORD must be set in environment variables"
+        )
     return Minio(
-        settings.minio_api_url,
-        access_key=settings.minio_root_user,
-        secret_key=settings.minio_root_password,
-        secure=settings.minio_secure,
+        MINIO_URL,
+        access_key=MINIO_ROOT_USER,
+        secret_key=MINIO_ROOT_PASSWORD,
+        secure=MINIO_SECURE,
     )
 
 
