@@ -15,6 +15,7 @@ def remote_trigger(
     user_id: uuid.UUID,
     file_job_id: uuid.UUID,
 ) -> dict[str, Any]:
+
     return {
         "ok": True,
         "message": "Remote trigger task ran",
@@ -23,7 +24,7 @@ def remote_trigger(
     }
 
 
-@celery_app.task(name="tasks.file_tasks.queue_pending_document") # type: ignore
+@celery_app.task(name="tasks.file_tasks.queue_old_pending_document") # type: ignore
 def process_document() -> dict[str, Any]:
     auth_token = get_auth_token()
     jobs = retrieve_jobs(auth_token)

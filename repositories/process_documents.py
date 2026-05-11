@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from typing import Any
 
@@ -19,11 +20,14 @@ def retrieve_jobs(auth_token: str) -> list[FileJob]:
     jobs: list[FileJob] = []
     remaining = JOB_BATCH_SIZE
 
+    queued_at = datetime.now() - timedelta(minutes=10)
+
     query = urlencode(
         {
             "status": CLAIMABLE_STATUSES,
             "limit": remaining,
             "offset": 0,
+            "queued_before": queued_at,
         }
     )
     url = f"{join_url(SCRAPPYS_SCRAPYARD_URL, FILE_JOBS_PATH)}?{query}"
