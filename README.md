@@ -1,12 +1,12 @@
 # offload-tasks
 
-A FastAPI application with Celery for offloading long-running tasks to background workers. This stack demonstrates asynchronous task processing using Redis as a message broker and result backend.
+A FastAPI application with Celery for offloading long-running tasks to background workers. This stack demonstrates asynchronous task processing using RabbitMQ as a message broker.
 
 ## Architecture
 
 - **FastAPI**: Web API framework for handling HTTP requests
 - **Celery**: Distributed task queue for background job processing
-- **Redis**: Message broker and result backend
+- **RabbitMQ**: Message broker for Celery task delivery
 - **Flower**: Web-based tool for monitoring Celery clusters
 
 ## Features
@@ -39,7 +39,8 @@ docker-compose up -d
 3. The services will be available at:
    - **API**: http://localhost:8001
    - **Flower Dashboard**: http://localhost:5555
-   - **Redis**: localhost:6380
+   - **RabbitMQ**: localhost:5672
+   - **RabbitMQ Management**: http://localhost:15672
 
 ### API Usage
 
@@ -66,7 +67,7 @@ Response:
   - `POST /documents/{document_id}/process` - Queue document processing
 
 ### Worker Service
-- **Purpose**: Processes background tasks from the Redis queue
+- **Purpose**: Processes background tasks from RabbitMQ queues
 - **Tasks**: Document processing (simulates 10-second processing time)
 
 ### Flower Service
@@ -74,10 +75,10 @@ Response:
 - **Purpose**: Monitor Celery workers and tasks
 - **Features**: Real-time task monitoring, worker statistics
 
-### Redis Service
-- **Port**: 6380 (mapped to container port 6379)
-- **Purpose**: Message broker (database 0) and result backend (database 1)
-- **Configuration**: Persistence disabled for development
+### RabbitMQ Service
+- **AMQP Port**: 5672
+- **Management Port**: 15672
+- **Purpose**: Durable message broker for Celery task delivery
 
 ## Development
 
@@ -90,13 +91,16 @@ pip install -r requirements.txt
 
 2. Set environment variables:
 ```bash
-export CELERY_BROKER_URL="redis://localhost:6380/0"
-export CELERY_RESULT_BACKEND="redis://localhost:6380/1"
+export CELERY_BROKER_URL="amqp://offload:offload@localhost:5672//"
+export CELERY_RESULT_BACKEND="rpc://"
 ```
 
-3. Start Redis:
+3. Start RabbitMQ:
 ```bash
-docker run -p 6380:6379 redis:latest
+docker run -p 5672:5672 -p 15672:15672 \
+  -e RABBITMQ_DEFAULT_USER=offload \
+  -e RABBITMQ_DEFAULT_PASS=offload \
+  rabbitmq:3.13-management
 ```
 
 4. Start the API server:
@@ -133,9 +137,8 @@ offload-tasks/
 
 ### Environment Variables
 
-- `CELERY_BROKER_URL`: Redis URL for message broker
-- `CELERY_RESULT_BACKEND`: Redis URL for storing task results
-- `REDIS_URL`: Base Redis connection URL
+- `CELERY_BROKER_URL`: RabbitMQ AMQP URL for message broker
+- `CELERY_RESULT_BACKEND`: Celery result backend URL; defaults to `rpc://`
 
 ### Celery Configuration
 
@@ -165,9 +168,9 @@ This will start 3 worker instances to process tasks in parallel.
 
 ### Common Issues
 
-1. **Services not starting**: Check if ports 8001, 5555, or 6380 are already in use
+1. **Services not starting**: Check if ports 8001, 5555, 5672, or 15672 are already in use
 2. **Task failures**: Check worker logs with `docker-compose logs worker`
-3. **Connection errors**: Ensure Redis is healthy with `docker-compose ps`
+3. **Connection errors**: Ensure RabbitMQ is healthy with `docker-compose ps`
 
 ### Logs
 

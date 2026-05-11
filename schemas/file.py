@@ -5,3 +5,6 @@ class NewFileIngestionTask(BaseModel):
     file_id: str
     storage_key: str
 
+class UserFile(BaseModel):
+    file_id: str
+

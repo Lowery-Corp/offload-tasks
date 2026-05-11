@@ -1,15 +1,16 @@
 import os
+from kombu import Exchange, Queue
 
 from celery import Celery
 
 CELERY_BROKER_URL = os.getenv(
     "CELERY_BROKER_URL",
-    "redis://offload-task-cache:6379/0",
+    "amqp://offload:offload@offload-task-broker:5672//",
 )
 
 CELERY_RESULT_BACKEND = os.getenv(
     "CELERY_RESULT_BACKEND",
-    "redis://offload-task-cache:6379/1",
+    "rpc://",
 )
 
 celery_app = Celery(
@@ -22,7 +23,7 @@ celery_app = Celery(
     ],
 )
 
-celery_app.conf.update(
+celery_app.conf.update( # type: ignore
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
@@ -30,4 +31,14 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     result_expires=3600,
+
+    task_default_queue="default",
+    task_default_exchange="default",
+    task_default_routing_key="default",
+
+    task_queues=(
+        Queue("default", Exchange("default"), routing_key="default"),
+        Queue("documents", Exchange("documents"), routing_key="documents"),
+        Queue("maintenance", Exchange("maintenance"), routing_key="maintenance"),
+    ),
 )
