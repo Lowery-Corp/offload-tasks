@@ -26,7 +26,7 @@ def get_minio_client() -> Minio:
     )
 
 
-async def get_bucket_structure(bucket_name: str) -> dict[str, Any]:
+def get_bucket_structure(bucket_name: str) -> dict[str, Any]:
     minio_client = get_minio_client()
 
     objects = minio_client.list_objects(bucket_name, recursive=True)
@@ -47,7 +47,7 @@ async def get_bucket_structure(bucket_name: str) -> dict[str, Any]:
     return structure["home"] if "home" in structure else structure
 
 
-async def create_bucket(bucket_name: str) -> dict[str, Any]:
+def create_bucket(bucket_name: str) -> dict[str, Any]:
     minio_client = get_minio_client()
     try:
         minio_client.make_bucket(bucket_name)
@@ -56,7 +56,7 @@ async def create_bucket(bucket_name: str) -> dict[str, Any]:
         return {"error": str(e)}
 
 
-async def upload_file_to_minio(
+def upload_file_to_minio(
     bucket_name: str,
     file_path: str,
     file_data: bytes,
@@ -85,7 +85,7 @@ async def upload_file_to_minio(
         return {"error": str(e), "ok": False}
 
 
-async def get_file_from_minio(bucket_name: str, file_path: str) -> dict[str, Any]:
+def get_file_from_minio(bucket_name: str, file_path: str) -> dict[str, Any]:
     minio_client = get_minio_client()
 
     try:
@@ -99,7 +99,7 @@ async def get_file_from_minio(bucket_name: str, file_path: str) -> dict[str, Any
         return {"error": str(e), "ok": False}
 
 
-async def delete_path_from_minio(bucket_name: str, path: str) -> dict[str, Any]:
+def delete_path_from_minio(bucket_name: str, path: str) -> dict[str, Any]:
     minio_client = get_minio_client()
 
     try:

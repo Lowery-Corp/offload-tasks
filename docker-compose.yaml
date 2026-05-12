@@ -22,6 +22,8 @@ services:
     working_dir: /app
     command: celery -A worker.beat:celery_app beat --loglevel=info
     restart: always
+    env_file:
+      - .env
     depends_on:
       offload-task-broker:
         condition: service_healthy
@@ -34,6 +36,8 @@ services:
       dockerfile: Dockerfile
     working_dir: /app
     command: celery -A worker.celery_app flower --port=5555
+    env_file:
+      - .env
     ports:
       - "5555:5555"
     depends_on:
@@ -51,6 +55,8 @@ services:
       RABBITMQ_DEFAULT_PASS: offload
     volumes:
       - offload-task-broker:/var/lib/rabbitmq
+    env_file:
+      - .env
     restart: always
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]

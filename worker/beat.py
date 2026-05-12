@@ -13,7 +13,7 @@ celery_app.conf.beat_schedule = {
     },
     "file-check-every-ten-secs": {
         "task": "tasks.file_tasks.queue_old_pending_document",
-        "schedule": 5.0,
+        "schedule": 30.0,
     },
     "file-cleanup-old-results-daily": {
         "task": "tasks.file_tasks.cleanup_old_results",
