@@ -204,7 +204,7 @@ def build_file_chunks(
     for chunk, embedding in zip(valid_chunks, embeddings):
         file_chunks.append(
             FileChunkCreate(
-                file_id=file_id,
+                file_id=str(file_id),
                 chunk_index=chunk.get("chunk_index", 0),
                 chunk_text=chunk["content"],
                 embedding=embedding,
@@ -213,3 +213,16 @@ def build_file_chunks(
         )
 
     return file_chunks
+
+
+def push_chunks(new_chunks: list[FileChunkCreate], auth_token: str) -> dict[str, Any]:
+    for chunk in new_chunks:
+        create_chunk = request_json(
+            method="POST",
+            url=join_url(str(SCRAPPYS_SCRAPYARD_URL), "/api/v1/file-chunks"),
+            headers={"Cookie": f"access_token={auth_token}"},
+            body=chunk.model_dump(),
+        )
+        logger.info(create_chunk)
+
+    return {"ok": True, "message": f"Pushed {len(new_chunks)} chunks to the API"}

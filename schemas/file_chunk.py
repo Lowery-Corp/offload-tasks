@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class FileChunkCreate(BaseModel):
-    file_id: uuid.UUID
+    file_id: str
     chunk_index: int
     chunk_text: str
     embedding: list[float]
@@ -25,7 +25,7 @@ class FileChunkRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    file_id: int
+    file_id: uuid.UUID
     chunk_index: int
     chunk_text: str
     embedding: list[float]
