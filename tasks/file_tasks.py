@@ -38,10 +38,15 @@ def process_document() -> dict[str, Any]:
 
         raw_chunks = parse_file(bucket_name=job.bucket_name, storage_key=job.storage_key)
 
-        create_chunks = build_file_chunks(file_id=job.file_id, raw_chunks=raw_chunks)
+        new_chunks = build_file_chunks(file_id=job.file_id, file_chunk_data=raw_chunks)
 
-        for chunk in create_chunks:
-            logger.info(f"Chunk for file {job.file_id}: index={chunk.chunk_index}, text={chunk.chunk_text[:100]}...")
+        for chunk in new_chunks:
+            logger.info("-------------------------------------------------")
+            logger.info(f"Chunk index: {chunk.chunk_index}")
+            logger.info(f"Chunk content: {chunk.chunk_text[:200]}...")
+            logger.info(f"Chunk token count: {chunk.token_count}")
+            logger.info(f"Chunk embedding: {chunk.embedding[:10]}")
+            logger.info(f"------------------------------------------------")
 
     return {
         "ok": True,

@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import tempfile
 import hashlib
@@ -74,6 +75,22 @@ def extract_pdf_to_markdown(file_path: str) -> str:
     return pymupdf4llm.to_markdown(file_path)
 
 
+def normalize_chunk_text(text: str) -> str:
+    # Normalize line endings
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Strip leading/trailing whitespace from the whole chunk
+    text = text.strip()
+
+    # Remove trailing spaces from each line
+    text = "\n".join(line.rstrip() for line in text.split("\n"))
+
+    # Collapse excessive blank lines, but preserve paragraph breaks
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text
+
+
 def get_token_count(text: str) -> int:
     encoding = tiktoken.get_encoding(ENCODING_NAME)
     return len(encoding.encode(text))
@@ -83,7 +100,7 @@ def get_content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def split_markdown(markdown_text: str) -> list[dict[str, Any]]:
+def split_markdown(markdown_text: str) -> list[str]:
     splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         encoding_name=ENCODING_NAME,
         chunk_size=CHUNK_SIZE,
@@ -105,7 +122,7 @@ def split_markdown(markdown_text: str) -> list[dict[str, Any]]:
 def parse_file(
     bucket_name: str,
     storage_key: str,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     job_file = get_file_from_minio(
         bucket_name=bucket_name,
         file_path=storage_key,
@@ -126,26 +143,61 @@ def parse_file(
 
         markdown_text = extract_pdf_to_markdown(tmp_file.name)
 
-    raw_chunks: list[dict[str, Any]] = split_markdown(markdown_text)
-    logger.info(raw_chunks)
+    raw_chunks: list[str] = split_markdown(markdown_text)
+
+    clean_chunks: list[str] = []
+
+    for chunk in raw_chunks:
+        clean_chunk = normalize_chunk_text(chunk)
+
+        if clean_chunk:
+            clean_chunks.append(clean_chunk)
+
+    parsed_chunks: list[dict[str, Any]] = [
+        {
+            "chunk_index": index,
+            "content": chunk,
+            "content_hash": get_content_hash(chunk),
+            "token_count": get_token_count(chunk),
+            "chunk_size": CHUNK_SIZE,
+            "chunk_overlap": CHUNK_OVERLAP,
+            "encoding_name": ENCODING_NAME,
+        }
+        for index, chunk in enumerate(clean_chunks)
+    ]
 
 
-    return raw_chunks
+    return {
+        "bucket_name": bucket_name,
+        "storage_key": storage_key,
+        "extractor_name": "pymupdf4llm",
+        "extraction_format": "markdown",
+        "extraction_text": markdown_text,
+        "extraction_hash": get_content_hash(markdown_text),
+        "token_count": get_token_count(markdown_text),
+        "chunk_count": len(parsed_chunks),
+        "chunks": parsed_chunks,
+    }
 
 
 def build_file_chunks(
     file_id: uuid.UUID,
-    raw_chunks: list[dict[str, Any]],
+    file_chunk_data: dict[str, Any],
 ) -> list[FileChunkCreate]:
-    logger.info(raw_chunks)
+
+    raw_chunks = file_chunk_data.get("chunks", None)
+    assert raw_chunks is not None, "Parsed file data is missing 'chunks' key"
+
     valid_chunks = [
         chunk
         for chunk in raw_chunks
-        if str(chunk.get("content", "")).strip()
+        if str(dict(chunk).get("content", "")).strip()
     ]
 
     texts = [chunk["content"] for chunk in valid_chunks]
-    embeddings = create_embeddings(texts)
+    # embeddings = create_embeddings(texts)
+    # todo: dummy embedding data
+    embeddings = [[0.0] * 1536 for _ in texts]
 
     file_chunks: list[FileChunkCreate] = []
 
