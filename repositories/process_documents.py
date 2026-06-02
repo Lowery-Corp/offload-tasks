@@ -195,9 +195,9 @@ def build_file_chunks(
     ]
 
     texts = [chunk["content"] for chunk in valid_chunks]
-    # embeddings = create_embeddings(texts)
+    embeddings = create_embeddings(texts)
     # todo: dummy embedding data
-    embeddings = [[0.0] * 1536 for _ in texts]
+    # embeddings = [[0.0] * 1536 for _ in texts]
 
     file_chunks: list[FileChunkCreate] = []
 
