@@ -9,7 +9,7 @@ class FileChunkCreate(BaseModel):
     chunk_text: str
     embedding: list[float]
     token_count: int
-    embedding_status: str = "pending"
+    embedding_status: str = "competed"
 
 
 class FileChunkUpdate(BaseModel):
