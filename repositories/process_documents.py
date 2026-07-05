@@ -166,7 +166,6 @@ def parse_file(
         for index, chunk in enumerate(clean_chunks)
     ]
 
-
     return {
         "bucket_name": bucket_name,
         "storage_key": storage_key,
@@ -194,12 +193,17 @@ def build_file_chunks(
         if str(dict(chunk).get("content", "")).strip()
     ]
 
-    texts = [chunk["content"] for chunk in valid_chunks]
-    embeddings = create_embeddings(texts)
-    # todo: dummy embedding data
-    # embeddings = [[0.0] * 1536 for _ in texts]
-
+    embeddings: list[list[float]] = []
     file_chunks: list[FileChunkCreate] = []
+
+    texts = [chunk["content"] for chunk in valid_chunks]
+
+    for text in texts:
+        if not isinstance(text, str):
+            raise ValueError(f"Expected chunk content to be of type 'str', but got {type(text)}")
+
+        embedding = create_embeddings(text)
+        embeddings.append(embedding)
 
     for chunk, embedding in zip(valid_chunks, embeddings):
         file_chunks.append(
@@ -223,6 +227,5 @@ def push_chunks(new_chunks: list[FileChunkCreate], auth_token: str) -> dict[str,
             headers={"Cookie": f"access_token={auth_token}"},
             body=chunk.model_dump(),
         )
-        logger.info(create_chunk)
 
     return {"ok": True, "message": f"Pushed {len(new_chunks)} chunks to the API"}

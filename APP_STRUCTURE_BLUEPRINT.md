@@ -2,6 +2,8 @@
 
 This repository is structured as a small Python background-task service. It uses Celery for task execution, RabbitMQ for broker delivery, and repository/helper modules for external service integrations.
 
+The current app is worker-first: it claims file jobs from the Scrappyard CRUD API, retrieves PDFs from MinIO, converts them to markdown, chunks the extracted text, creates OpenAI embeddings, pushes file chunks back to the CRUD API, and updates job status as processing advances.
+
 Use this document as the structural blueprint when asking agents to create new apps with the same shape.
 
 ## High-Level Layout
@@ -35,15 +37,25 @@ Owns Celery application setup and worker entrypoints.
 
 Use this directory for process-level worker configuration, task registration, queue settings, serializers, result expiration, timezone settings, and beat schedules. Avoid putting business logic here; task behavior belongs in `tasks/`.
 
+Current queue configuration defines `default`, `documents`, and `maintenance` queues.
+
 ### `tasks/`
 
 Contains Celery task definitions.
 
 - `tasks/health.py` contains health-check and cleanup tasks.
-- `tasks/file_tasks.py` contains file/document-related task examples.
+- `tasks/file_tasks.py` contains file/document processing tasks.
 - `tasks/__init__.py` marks the directory as a Python package.
 
 Use this directory for functions decorated with `@celery_app.task(...)`. Tasks should orchestrate work, validate task-level inputs, call auth/repository/helper modules, and return JSON-serializable results. Keep reusable integration code out of task files.
+
+Current file task names:
+
+- `tasks.file_tasks.remote_trigger`: processes a single file job from explicit file, storage, user, and job identifiers.
+- `tasks.file_tasks.queue_old_pending_document`: claims pending jobs from the CRUD API and processes them.
+- `tasks.file_tasks.cleanup_old_results`: placeholder cleanup task.
+- `tasks.health.health_check`: lightweight worker health check.
+- `tasks.health.cleanup_old_results`: scheduled health/maintenance cleanup placeholder.
 
 ### `auth/`
 
@@ -65,7 +77,7 @@ Use this directory for reusable transport-level helpers. Keep auth, domain URL c
 
 Contains small shared utility functions.
 
-- `helpers/dependencies.py` currently provides `join_url(...)` for safely combining base URLs and paths.
+- `helpers/dependencies.py` currently provides `logger`, a Celery task logger, and `join_url(...)` for safely combining base URLs and paths.
 
 Use this directory for simple cross-cutting utilities that do not belong to a domain repository.
 
@@ -74,9 +86,19 @@ Use this directory for simple cross-cutting utilities that do not belong to a do
 Contains integrations with external systems and storage backends.
 
 - `repositories/minio.py` wraps MinIO object-storage operations such as bucket creation, object upload, object read, object deletion, and bucket tree inspection.
-- `repositories/process_documents.py` retrieves claimable file jobs from the Scrappyard CRUD endpoint. It requests `pending` and `queued` jobs up to `FILE_JOB_BATCH_SIZE`, passing the auth token as an `access_token` cookie.
+- `repositories/openapi.py` wraps OpenAI embedding calls.
+- `repositories/process_documents.py` retrieves claimable file jobs from the Scrappyard CRUD endpoint, updates job statuses, retrieves PDFs from MinIO, extracts markdown using `pymupdf4llm`, normalizes and splits text using LangChain text splitters and `tiktoken`, builds `FileChunkCreate` payloads with embeddings, and pushes chunks to `/api/v1/file-chunks`.
 
 Use this directory for adapters around external services such as object storage, third-party APIs, queues, search, or other infrastructure. Repositories should hide client setup and external API details from tasks.
+
+Current document-processing defaults:
+
+- `CLAIMABLE_STATUSES`: pending jobs.
+- `FILE_JOB_BATCH_SIZE`: maximum jobs retrieved per polling run.
+- `ENCODING_NAME`: `cl100k_base`.
+- `CHUNK_SIZE`: `800`.
+- `CHUNK_OVERLAP`: `120`.
+- OpenAI embedding model: `text-embedding-3-small`.
 
 ### `schemas/`
 
@@ -84,6 +106,8 @@ Contains Pydantic data models used to validate structured inputs and outputs.
 
 - `schemas/file.py` defines file-ingestion task input shape.
 - `schemas/api_request_errors.py` defines `ApiRequestError`, the shared exception raised by HTTP/auth integration helpers.
+- `schemas/file_job.py` defines `FileJob`, the CRUD job DTO returned by file-job endpoints.
+- `schemas/file_chunk.py` defines file chunk create, update, and read DTOs for generated chunks and embeddings.
 - `schemas/user.py` defines user/auth-related models.
 - `schemas/__init__.py` marks the directory as a Python package.
 
@@ -114,8 +138,8 @@ Current services:
 
 - `worker`: runs a Celery worker using `celery -A worker.worker:celery_app worker --loglevel=info`.
 - `beat`: runs Celery Beat using `celery -A worker.beat:celery_app beat --loglevel=info`.
+- `flower`: runs Flower monitoring on port `5555`.
 - `offload-task-broker`: runs RabbitMQ for Celery broker delivery.
-- `flower`: present as a commented-out optional monitoring service.
 
 Current volumes:
 
@@ -139,6 +163,9 @@ Current dependency groups:
 - Pydantic and settings helpers.
 - Environment/settings helpers.
 - MinIO object-storage client support.
+- OpenAI embeddings client support.
+- PDF extraction and markdown conversion through PyMuPDF and `pymupdf4llm`.
+- Text splitting and token counting through LangChain text splitters and `tiktoken`.
 - Standard auth/security-related packages used by adjacent integrations.
 - Flower for optional Celery monitoring.
 - Watchfiles for development workflows.
@@ -161,11 +188,13 @@ Marks the repository root as importable Python package context when needed. Most
 3. `worker/celery_app.py` creates the Celery application using `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND`.
 4. `worker/worker.py` imports task modules so worker processes know which tasks exist.
 5. `worker/beat.py` registers periodic task schedules.
-6. Beat currently schedules `tasks.file_tasks.process_document` every 10 seconds.
-7. `process_document` authenticates through `auth.dependencies.get_auth_token()`.
-8. The task passes the token to `repositories.process_documents.retrieve_jobs(...)`.
-9. `retrieve_jobs(...)` calls the Scrappyard CRUD endpoint for `pending` and `queued` jobs and returns the retrieved jobs.
-10. Task functions in `tasks/` execute work and call helpers from `auth/`, `helpers/`, `http_request/`, `repositories/`, and `schemas/` as needed.
+6. Beat currently schedules `tasks.health.health_check` every 60 seconds and `tasks.health.cleanup_old_results` daily at midnight UTC. File polling schedules exist in comments and can be re-enabled when needed.
+7. File-processing tasks authenticate through `auth.dependencies.get_auth_token()`.
+8. `tasks.file_tasks.queue_old_pending_document` passes the token to `repositories.process_documents.retrieve_jobs(...)`.
+9. `retrieve_jobs(...)` calls the Scrappyard CRUD file-job endpoint for pending jobs older than the configured queued-before threshold.
+10. Each job is updated to `queued`, the source PDF is pulled from MinIO, converted to markdown, split into normalized chunks, embedded through OpenAI, and posted to the file-chunks endpoint.
+11. A successfully processed job is updated to `chunked`; failed processing updates the job to `error`.
+12. Task functions in `tasks/` execute work and call helpers from `auth/`, `helpers/`, `http_request/`, `repositories/`, and `schemas/` as needed.
 
 ## Naming and Import Conventions
 
@@ -181,7 +210,7 @@ from schemas.file import NewFileIngestionTask
 Use explicit Celery task names that match the module path:
 
 ```python
-@celery_app.task(name="tasks.file_tasks.process_document")
+@celery_app.task(name="tasks.file_tasks.queue_old_pending_document")
 def process_document():
     ...
 ```
@@ -202,6 +231,8 @@ Core variables used by this structure:
 - `FILE_JOBS_PATH`: path for file job listing; defaults to `/api/v1/file-jobs`.
 - `FILE_JOB_BATCH_SIZE`: maximum number of jobs to retrieve per polling run; defaults to `10`.
 - `API_REQUEST_TIMEOUT`: timeout in seconds for JSON HTTP requests; defaults to `10`.
+- `OPENAI_API_KEY`: API key required by `repositories/openapi.py` for embedding generation.
+- `OPENAI_EMBEDDING_MODEL`: declared embedding model setting; the current implementation calls `text-embedding-3-small` directly.
 
 Object-storage integrations may require additional variables:
 
@@ -223,7 +254,8 @@ new-app/
 ├── http_request/
 │   └── http_helpers.py
 ├── repositories/
-│   └── <external_service>.py
+│   ├── <external_service>.py
+│   └── <domain_processing>.py
 ├── schemas/
 │   ├── __init__.py
 │   └── <domain>.py

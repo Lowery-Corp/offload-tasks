@@ -19,14 +19,13 @@ def create_embedding(text: str) -> list[float]:
 
     return response.data[0].embedding
 
-def create_embeddings(texts: list[str]) -> list[list[float]]:
-    if not texts:
-        return []
+def create_embeddings(text: str) -> list[float]:
 
     response = client.embeddings.create(
         model="text-embedding-3-small",
-        input=texts,
+        input=text,
         encoding_format="float",
     )
+    item = response.data[0]
 
-    return [item.embedding for item in response.data]
+    return item.embedding

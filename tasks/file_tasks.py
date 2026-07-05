@@ -15,22 +15,21 @@ def remote_trigger(
     user_id: uuid.UUID,
     file_job_id: uuid.UUID,
 ) -> dict[str, Any]:
+    auth_token = get_auth_token()
+    user_bucket = f"user-{user_id}-bucket"
 
-    # assert job.bucket_name is not None, f"Job {job.job_id} is missing bucket_name"
-    # assert job.storage_key is not None, f"Job {job.job_id} is missing storage_key"
+    job_updated = update_job_status(job_id=str(file_job_id), new_status="queued", auth_token=auth_token)
+    assert job_updated.status == "queued", f"Failed to update job {file_job_id} to queued status"
 
-    # job_updated = update_job_status(job_id=str(job.job_id), new_status="queued", auth_token=auth_token)
-    # assert job_updated.status == "queued", f"Failed to update job {job.job_id} to queued status"
+    raw_chunks = parse_file(bucket_name=user_bucket, storage_key=storage_key)
 
-    # raw_chunks = parse_file(bucket_name=job.bucket_name, storage_key=job.storage_key)
+    new_chunks = build_file_chunks(file_id=file_id, file_chunk_data=raw_chunks)
 
-    # new_chunks = build_file_chunks(file_id=job.file_id, file_chunk_data=raw_chunks)
+    create_status = push_chunks(new_chunks=new_chunks, auth_token=auth_token)
+    assert create_status.get("ok"), f"Failed to push chunks for job {file_job_id}: {create_status.get('error')}"
 
-    # create_status = push_chunks(new_chunks=new_chunks, auth_token=auth_token)
-    # assert create_status.get("ok"), f"Failed to push chunks for job {job.job_id}: {create_status.get('error')}"
-
-    # job_updated = update_job_status(job_id=str(job.job_id), new_status="chunked", auth_token=auth_token)
-    # assert job_updated.status == "chunked", f"Failed to update job {job.job_id} to queued status"
+    job_updated = update_job_status(job_id=str(file_job_id), new_status="chunked", auth_token=auth_token)
+    assert job_updated.status == "chunked", f"Failed to update job {file_job_id} to queued status"
 
     return {
         "ok": True,
