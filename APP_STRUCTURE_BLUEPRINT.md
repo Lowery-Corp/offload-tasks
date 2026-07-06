@@ -2,7 +2,7 @@
 
 This repository is structured as a small Python background-task service. It uses Celery for task execution, RabbitMQ for broker delivery, and repository/helper modules for external service integrations.
 
-The current app is worker-first: it claims file jobs from the Scrappyard CRUD API, retrieves PDFs from MinIO, converts them to markdown, chunks the extracted text, creates OpenAI embeddings, pushes file chunks back to the CRUD API, and updates job status as processing advances.
+The current app is worker-first: it claims file jobs from the Scrappyard CRUD API, retrieves PDFs from MinIO, converts them to markdown, chunks the extracted text, creates OpenAI embeddings in batches, pushes file chunks back to the CRUD API, and updates job status as processing advances.
 
 Use this document as the structural blueprint when asking agents to create new apps with the same shape.
 
@@ -47,12 +47,14 @@ Contains Celery task definitions.
 - `tasks/file_tasks.py` contains file/document processing tasks.
 - `tasks/__init__.py` marks the directory as a Python package.
 
-Use this directory for functions decorated with `@celery_app.task(...)`. Tasks should orchestrate work, validate task-level inputs, call auth/repository/helper modules, and return JSON-serializable results. Keep reusable integration code out of task files.
+Use this directory for functions decorated with `@celery_app.task(...)`. Tasks should orchestrate work, validate task-level inputs, call auth/repository/helper modules, and return JSON-serializable results. Keep reusable integration code out of task files unless it is shared task orchestration for closely related task entrypoints.
+
+Current file-task orchestration uses a shared `process_file_job(...)` helper in `tasks/file_tasks.py` so `remote_trigger` and `queue_old_pending_document` follow the same processing path, status updates, and result shape.
 
 Current file task names:
 
-- `tasks.file_tasks.remote_trigger`: processes a single file job from explicit file, storage, user, and job identifiers.
-- `tasks.file_tasks.queue_old_pending_document`: claims pending jobs from the CRUD API and processes them.
+- `tasks.file_tasks.remote_trigger`: processes a single file job from explicit file, storage, user, and job identifiers; it skips jobs already marked `chunked`, normalizes UUID inputs, and retries transient API/network failures.
+- `tasks.file_tasks.queue_old_pending_document`: claims pending jobs from the CRUD API and processes them through the same shared file-job pipeline.
 - `tasks.file_tasks.cleanup_old_results`: placeholder cleanup task.
 - `tasks.health.health_check`: lightweight worker health check.
 - `tasks.health.cleanup_old_results`: scheduled health/maintenance cleanup placeholder.
@@ -86,8 +88,8 @@ Use this directory for simple cross-cutting utilities that do not belong to a do
 Contains integrations with external systems and storage backends.
 
 - `repositories/minio.py` wraps MinIO object-storage operations such as bucket creation, object upload, object read, object deletion, and bucket tree inspection.
-- `repositories/openapi.py` wraps OpenAI embedding calls.
-- `repositories/process_documents.py` retrieves claimable file jobs from the Scrappyard CRUD endpoint, updates job statuses, retrieves PDFs from MinIO, extracts markdown using `pymupdf4llm`, normalizes and splits text using LangChain text splitters and `tiktoken`, builds `FileChunkCreate` payloads with embeddings, and pushes chunks to `/api/v1/file-chunks`.
+- `repositories/openapi.py` wraps OpenAI embedding calls, including batched embedding requests through `create_embeddings(...)`.
+- `repositories/process_documents.py` retrieves claimable file jobs from the Scrappyard CRUD endpoint, retrieves individual jobs for idempotency checks, updates and verifies job statuses, retrieves PDFs from MinIO, extracts markdown using `pymupdf4llm`, normalizes and splits text using LangChain text splitters and `tiktoken`, builds `FileChunkCreate` payloads with batched embeddings, and pushes chunks to `/api/v1/file-chunks`.
 
 Use this directory for adapters around external services such as object storage, third-party APIs, queues, search, or other infrastructure. Repositories should hide client setup and external API details from tasks.
 
@@ -98,7 +100,7 @@ Current document-processing defaults:
 - `ENCODING_NAME`: `cl100k_base`.
 - `CHUNK_SIZE`: `800`.
 - `CHUNK_OVERLAP`: `120`.
-- OpenAI embedding model: `text-embedding-3-small`.
+- OpenAI embedding model: `OPENAI_EMBEDDING_MODEL`, defaulting to `text-embedding-3-small`.
 
 ### `schemas/`
 
@@ -121,14 +123,14 @@ Defines the Python runtime image.
 
 Current responsibilities:
 
-- Uses `python:3.13-slim`.
+- Uses `python:3.12-slim`.
 - Sets `/app` as the working directory.
 - Installs Python requirements.
 - Copies the repository into the container.
 - Sets `PYTHONPATH=/app`.
-- Defines a default `uvicorn app.main:app` command, although the current Compose worker and beat services override it.
+- Defines a default Celery worker command, although Compose services still provide explicit process commands.
 
-When creating a new app with this structure, keep the Dockerfile generic and let `docker-compose.yaml` decide which command each service runs. If no API package exists, prefer a neutral default command or rely on Compose overrides.
+When creating a new app with this structure, keep the Dockerfile generic and let `docker-compose.yaml` decide which command each service runs. If no API package exists, prefer a worker-oriented default command or rely on Compose overrides.
 
 ### `docker-compose.yaml`
 
@@ -192,9 +194,11 @@ Marks the repository root as importable Python package context when needed. Most
 7. File-processing tasks authenticate through `auth.dependencies.get_auth_token()`.
 8. `tasks.file_tasks.queue_old_pending_document` passes the token to `repositories.process_documents.retrieve_jobs(...)`.
 9. `retrieve_jobs(...)` calls the Scrappyard CRUD file-job endpoint for pending jobs older than the configured queued-before threshold.
-10. Each job is updated to `queued`, the source PDF is pulled from MinIO, converted to markdown, split into normalized chunks, embedded through OpenAI, and posted to the file-chunks endpoint.
-11. A successfully processed job is updated to `chunked`; failed processing updates the job to `error`.
-12. Task functions in `tasks/` execute work and call helpers from `auth/`, `helpers/`, `http_request/`, `repositories/`, and `schemas/` as needed.
+10. Each job runs through `tasks.file_tasks.process_file_job(...)`, which validates identifiers and storage inputs, updates the job to `queued`, then performs best-effort intermediate updates for `processing`, `chunking`, and `embedding`.
+11. The source PDF is pulled from MinIO, converted to markdown, split into normalized chunks, embedded through OpenAI in a batch request, and posted to the file-chunks endpoint.
+12. A successfully processed job is updated to `chunked`; failed processing updates the job to `error`. Remote-triggered jobs already marked `chunked` are skipped to avoid reprocessing.
+13. Task return values include file/job identifiers, storage metadata, chunk counts, token counts, final status, and failure summaries without exposing auth tokens.
+14. Task functions in `tasks/` execute work and call helpers from `auth/`, `helpers/`, `http_request/`, `repositories/`, and `schemas/` as needed.
 
 ## Naming and Import Conventions
 
@@ -232,7 +236,7 @@ Core variables used by this structure:
 - `FILE_JOB_BATCH_SIZE`: maximum number of jobs to retrieve per polling run; defaults to `10`.
 - `API_REQUEST_TIMEOUT`: timeout in seconds for JSON HTTP requests; defaults to `10`.
 - `OPENAI_API_KEY`: API key required by `repositories/openapi.py` for embedding generation.
-- `OPENAI_EMBEDDING_MODEL`: declared embedding model setting; the current implementation calls `text-embedding-3-small` directly.
+- `OPENAI_EMBEDDING_MODEL`: embedding model setting; defaults to `text-embedding-3-small`.
 
 Object-storage integrations may require additional variables:
 
@@ -284,7 +288,7 @@ Recommended agent instructions for future apps:
 - Put small URL/path/config utility functions in `helpers/`.
 - Put external service clients and adapters in `repositories/`.
 - Put Pydantic models in `schemas/`.
-- Keep task return values JSON serializable.
+- Keep task return values JSON serializable and avoid returning credentials or partial auth tokens.
 - Add new task modules to Celery `include` and worker imports.
 - Keep Docker Compose service commands explicit for each process role.
 - Keep the runtime image generic and reuse it for worker, beat, API, and monitoring processes when possible.
