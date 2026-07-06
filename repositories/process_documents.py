@@ -31,9 +31,16 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120
 
 
+def require_scrappyard_config() -> tuple[str, str]:
+    if SCRAPPYS_SCRAPYARD_URL is None:
+        raise RuntimeError("SCRAPPYS_SCRAPYARD_URL must be configured")
+    if FILE_JOBS_PATH is None:
+        raise RuntimeError("FILE_JOBS_PATH must be configured")
+    return SCRAPPYS_SCRAPYARD_URL, FILE_JOBS_PATH
+
+
 def retrieve_jobs(auth_token: str) -> list[FileJob]:
-    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
-    assert FILE_JOBS_PATH is not None, "FILE_JOBS_PATH must be configured"
+    scrappyard_url, file_jobs_path = require_scrappyard_config()
     jobs: list[FileJob] = []
     remaining = JOB_BATCH_SIZE
 
@@ -48,7 +55,7 @@ def retrieve_jobs(auth_token: str) -> list[FileJob]:
             "add_file_data": True,
         }
     )
-    url = f"{join_url(SCRAPPYS_SCRAPYARD_URL, FILE_JOBS_PATH)}?{query}"
+    url = f"{join_url(scrappyard_url, file_jobs_path)}?{query}"
     headers = {"Cookie": f"access_token={auth_token}"}
     payload: list[dict[str, Any]] = request_json(method="GET", url=url, headers=headers)[0]
 
@@ -58,17 +65,29 @@ def retrieve_jobs(auth_token: str) -> list[FileJob]:
     return jobs
 
 
-def update_job_status(job_id: str, new_status: str, auth_token: str) -> FileJob:
-    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
-    assert FILE_JOBS_PATH is not None, "FILE_JOBS_PATH must be configured"
+def retrieve_job(job_id: str, auth_token: str) -> FileJob:
+    scrappyard_url, file_jobs_path = require_scrappyard_config()
+    url = join_url(scrappyard_url, f"{file_jobs_path}/{job_id}")
+    headers = {"Cookie": f"access_token={auth_token}"}
+    response = request_json(method="GET", url=url, headers=headers)
+    return FileJob(**response[0])
 
-    url_path = f"{FILE_JOBS_PATH}/{job_id}"
-    url = join_url(SCRAPPYS_SCRAPYARD_URL, url_path)
+
+def update_job_status(job_id: str, new_status: str, auth_token: str) -> FileJob:
+    scrappyard_url, file_jobs_path = require_scrappyard_config()
+    url = join_url(scrappyard_url, f"{file_jobs_path}/{job_id}")
 
     headers = {"Cookie": f"access_token={auth_token}"}
     payload = {"status": new_status}
     response = request_json(method="PATCH", url=url, headers=headers, body=payload)
-    return FileJob(**response[0])
+    updated_job = FileJob(**response[0])
+
+    if updated_job.status != new_status:
+        raise RuntimeError(
+            f"Expected job {job_id} to be {new_status}, got {updated_job.status}"
+        )
+
+    return updated_job
 
 
 def extract_pdf_to_markdown(file_path: str) -> str:
@@ -166,7 +185,6 @@ def parse_file(
         for index, chunk in enumerate(clean_chunks)
     ]
 
-
     return {
         "bucket_name": bucket_name,
         "storage_key": storage_key,
@@ -185,22 +203,29 @@ def build_file_chunks(
     file_chunk_data: dict[str, Any],
 ) -> list[FileChunkCreate]:
 
-    raw_chunks = file_chunk_data.get("chunks", None)
-    assert raw_chunks is not None, "Parsed file data is missing 'chunks' key"
+    raw_chunks = file_chunk_data.get("chunks")
+    if not isinstance(raw_chunks, list):
+        raise ValueError("Parsed file data is missing a valid 'chunks' list")
 
-    valid_chunks = [
-        chunk
-        for chunk in raw_chunks
-        if str(dict(chunk).get("content", "")).strip()
-    ]
+    valid_chunks: list[dict[str, Any]] = []
+    for chunk in raw_chunks:
+        if not isinstance(chunk, dict):
+            raise ValueError(f"Expected parsed chunk to be a dict, got {type(chunk)}")
+        if str(chunk.get("content", "")).strip():
+            valid_chunks.append(chunk)
 
-    texts = [chunk["content"] for chunk in valid_chunks]
+    texts: list[str] = []
+    for chunk in valid_chunks:
+        content = chunk.get("content")
+        if not isinstance(content, str):
+            raise ValueError(f"Expected chunk content to be of type 'str', got {type(content)}")
+        texts.append(content)
+
     embeddings = create_embeddings(texts)
-    # todo: dummy embedding data
-    # embeddings = [[0.0] * 1536 for _ in texts]
+    if len(embeddings) != len(valid_chunks):
+        raise RuntimeError("Embedding count did not match chunk count")
 
     file_chunks: list[FileChunkCreate] = []
-
     for chunk, embedding in zip(valid_chunks, embeddings):
         file_chunks.append(
             FileChunkCreate(
@@ -216,13 +241,14 @@ def build_file_chunks(
 
 
 def push_chunks(new_chunks: list[FileChunkCreate], auth_token: str) -> dict[str, Any]:
+    scrappyard_url, _ = require_scrappyard_config()
+
     for chunk in new_chunks:
-        create_chunk = request_json(
+        request_json(
             method="POST",
-            url=join_url(str(SCRAPPYS_SCRAPYARD_URL), "/api/v1/file-chunks"),
+            url=join_url(scrappyard_url, "/api/v1/file-chunks"),
             headers={"Cookie": f"access_token={auth_token}"},
             body=chunk.model_dump(),
         )
-        logger.info(create_chunk)
 
     return {"ok": True, "message": f"Pushed {len(new_chunks)} chunks to the API"}
