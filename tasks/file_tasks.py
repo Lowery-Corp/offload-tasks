@@ -18,6 +18,7 @@ from schemas.api_request_errors import ApiRequestError
 from worker.celery_app import celery_app
 
 
+RETRYABLE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 RETRYABLE_ERRORS = (ApiRequestError, TimeoutError, ConnectionError)
 
 
@@ -35,6 +36,11 @@ def normalize_uuid(value: uuid.UUID | str, field_name: str) -> uuid.UUID:
 def retry_if_transient(task: Any, exc: Exception) -> None:
     if not isinstance(exc, RETRYABLE_ERRORS):
         return
+
+    if isinstance(exc, ApiRequestError):
+        status_code = exc.status_code
+        if status_code is not None and status_code not in RETRYABLE_HTTP_STATUSES:
+            return
 
     retry_count = getattr(task.request, "retries", 0)
     max_retries = getattr(task, "max_retries", 3)
@@ -128,7 +134,7 @@ def process_file_job(
             f"Failed to push chunks for job {job_uuid}: {create_status.get('error')}"
         )
 
-    set_file_status(file_id=file_uuid, status="ready", auth_token=auth_token)
+    set_file_status(file_id=file_uuid, status="ready", auth_token=auth_token, required=False)
     set_job_status(job_id=job_uuid, status="chunked", auth_token=auth_token)
 
     return {
@@ -195,15 +201,7 @@ def remote_trigger(
         if auth_token and file_uuid is not None:
             mark_file_error(file_uuid, auth_token)
         retry_if_transient(self, exc)
-        return {
-            "ok": False,
-            "message": f"Error processing job {job_id_text}: {exc}",
-            "worker_id": socket.gethostname(),
-            "triggered_at": utc_now(),
-            "file_job_id": job_id_text,
-            "storage_key": storage_key,
-            "final_status": "error",
-        }
+        raise RuntimeError(f"Error processing job {job_id_text}: {exc}") from exc
 
 
 @celery_app.task(name="tasks.file_tasks.queue_old_pending_document", bind=True, max_retries=3)  # type: ignore
@@ -213,12 +211,7 @@ def process_document(self: Any) -> dict[str, Any]:
         jobs = retrieve_jobs(auth_token)
     except Exception as exc:
         retry_if_transient(self, exc)
-        return {
-            "ok": False,
-            "message": f"Error retrieving file jobs: {exc}",
-            "worker_id": socket.gethostname(),
-            "processed_at": utc_now(),
-        }
+        raise RuntimeError(f"Error retrieving file jobs: {exc}") from exc
 
     results: list[dict[str, Any]] = []
     for job in jobs:
@@ -246,14 +239,27 @@ def process_document(self: Any) -> dict[str, Any]:
             )
 
     failed_count = sum(1 for result in results if not result["ok"])
+    processed_count = len(results) - failed_count
+
+    if failed_count:
+        failure_details = [
+            f"{result['file_job_id']}: {result['message']}"
+            for result in results
+            if not result["ok"]
+        ]
+        raise RuntimeError(
+            "Processed claimable file jobs with failures: "
+            f"{processed_count} succeeded, {failed_count} failed. "
+            + "; ".join(failure_details)
+        )
 
     return {
-        "ok": failed_count == 0,
+        "ok": True,
         "message": "Processed claimable file jobs",
         "worker_id": socket.gethostname(),
         "processed_at": utc_now(),
         "count": len(jobs),
-        "processed_count": len(results) - failed_count,
+        "processed_count": processed_count,
         "failed_count": failed_count,
         "results": results,
     }

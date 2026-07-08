@@ -1,7 +1,5 @@
 import os
-from typing import Any
 import json
-
 from typing import Any
 from schemas.api_request_errors import ApiRequestError
 from urllib.error import HTTPError, URLError
@@ -35,7 +33,10 @@ def request_json(
             response_headers = dict(response.headers.items())
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        raise ApiRequestError(f"{method} {url} failed with {exc.code}: {error_body}") from exc
+        raise ApiRequestError(
+            f"{method} {url} failed with {exc.code}: {error_body}",
+            status_code=exc.code,
+        ) from exc
     except URLError as exc:
         raise ApiRequestError(f"{method} {url} failed: {exc.reason}") from exc
     except TimeoutError as exc:
