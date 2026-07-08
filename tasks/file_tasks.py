@@ -79,28 +79,35 @@ def mark_job_error(job_id: uuid.UUID, auth_token: str) -> None:
 
 def set_file_status(
     *,
-    file_id: uuid.UUID,
+    user_file_id: int | str | uuid.UUID,
     status: str,
     auth_token: str,
     required: bool = True,
 ) -> None:
     try:
-        update_file_status(user_file_id=str(file_id), new_status=status, auth_token=auth_token)
+        update_file_status(
+            user_file_id=str(user_file_id),
+            new_status=status,
+            auth_token=auth_token,
+        )
     except Exception:
         if required:
             raise
         logger.warning(
             "Optional file status update failed",
-            extra={"file_id": str(file_id), "status": status},
+            extra={"user_file_id": str(user_file_id), "status": status},
             exc_info=True,
         )
 
 
-def mark_file_error(file_id: uuid.UUID, auth_token: str) -> None:
+def mark_file_error(user_file_id: int | str | uuid.UUID, auth_token: str) -> None:
     try:
-        set_file_status(file_id=file_id, status="error", auth_token=auth_token)
+        set_file_status(user_file_id=user_file_id, status="error", auth_token=auth_token)
     except Exception:
-        logger.exception("Failed to mark file as error", extra={"file_id": str(file_id)})
+        logger.exception(
+            "Failed to mark file as error",
+            extra={"user_file_id": str(user_file_id)},
+        )
 
 
 def process_file_job(
@@ -110,6 +117,7 @@ def process_file_job(
     bucket_name: str,
     storage_key: str,
     auth_token: str,
+    user_file_id: int | str | uuid.UUID | None = None,
 ) -> dict[str, Any]:
     file_uuid = normalize_uuid(file_id, "file_id")
     job_uuid = normalize_uuid(file_job_id, "file_job_id")
@@ -134,7 +142,8 @@ def process_file_job(
             f"Failed to push chunks for job {job_uuid}: {create_status.get('error')}"
         )
 
-    set_file_status(file_id=file_uuid, status="ready", auth_token=auth_token, required=False)
+    file_status_id = user_file_id if user_file_id is not None else file_uuid
+    set_file_status(user_file_id=file_status_id, status="ready", auth_token=auth_token)
     set_job_status(job_id=job_uuid, status="chunked", auth_token=auth_token)
 
     return {
@@ -159,6 +168,7 @@ def remote_trigger(
     auth_token = ""
     job_uuid: uuid.UUID | None = None
     file_uuid: uuid.UUID | None = None
+    user_file_id: int | None = None
 
     try:
         job_uuid = normalize_uuid(file_job_id, "file_job_id")
@@ -167,6 +177,7 @@ def remote_trigger(
         auth_token = get_auth_token()
 
         current_job = retrieve_job(job_id=str(job_uuid), auth_token=auth_token)
+        user_file_id = current_job.user_file_id
         if current_job.status == "chunked":
             return {
                 "ok": True,
@@ -185,6 +196,7 @@ def remote_trigger(
             bucket_name=f"user-{user_uuid}-bucket",
             storage_key=storage_key,
             auth_token=auth_token,
+            user_file_id=current_job.user_file_id,
         )
 
         return {
@@ -199,7 +211,7 @@ def remote_trigger(
         if auth_token and job_uuid is not None:
             mark_job_error(job_uuid, auth_token)
         if auth_token and file_uuid is not None:
-            mark_file_error(file_uuid, auth_token)
+            mark_file_error(user_file_id or file_uuid, auth_token)
         retry_if_transient(self, exc)
         raise RuntimeError(f"Error processing job {job_id_text}: {exc}") from exc
 
@@ -222,11 +234,12 @@ def process_document(self: Any) -> dict[str, Any]:
                 bucket_name=job.bucket_name or "",
                 storage_key=job.storage_key or "",
                 auth_token=auth_token,
+                user_file_id=job.user_file_id,
             )
             results.append({"ok": True, **result})
         except Exception as exc:
             mark_job_error(job.job_id, auth_token)
-            mark_file_error(job.file_id, auth_token)
+            mark_file_error(job.user_file_id or job.file_id, auth_token)
             results.append(
                 {
                     "ok": False,
