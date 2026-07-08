@@ -14,6 +14,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from helpers.dependencies import logger
 from http_request.http_helpers import request_json
 from helpers.dependencies import join_url
+from schemas.api_request_errors import ApiRequestError
 from schemas.file_job import FileJob
 from schemas.file_chunk import FileChunkCreate
 from repositories.minio import get_file_from_minio
@@ -264,13 +265,32 @@ def build_file_chunks(
 
 def push_chunks(new_chunks: list[FileChunkCreate], auth_token: str) -> dict[str, Any]:
     scrappyard_url, _ = require_scrappyard_config()
+    skipped_conflicts = 0
 
     for chunk in new_chunks:
-        request_json(
-            method="POST",
-            url=join_url(scrappyard_url, "/api/v1/file-chunks"),
-            headers={"Cookie": f"access_token={auth_token}"},
-            body=chunk.model_dump(),
-        )
+        try:
+            request_json(
+                method="POST",
+                url=join_url(scrappyard_url, "/api/v1/file-chunks"),
+                headers={"Cookie": f"access_token={auth_token}"},
+                body=chunk.model_dump(),
+            )
+        except ApiRequestError as exc:
+            if exc.status_code != 409:
+                raise
+            skipped_conflicts += 1
+            logger.info(
+                "File chunk already exists; skipping duplicate create",
+                extra={
+                    "file_id": chunk.file_id,
+                    "chunk_index": chunk.chunk_index,
+                },
+            )
 
-    return {"ok": True, "message": f"Pushed {len(new_chunks)} chunks to the API"}
+    created_count = len(new_chunks) - skipped_conflicts
+    return {
+        "ok": True,
+        "message": f"Pushed {created_count} chunks to the API; skipped {skipped_conflicts} existing chunks",
+        "created_count": created_count,
+        "skipped_conflicts": skipped_conflicts,
+    }

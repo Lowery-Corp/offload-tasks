@@ -11,12 +11,4 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.health.cleanup_old_results",
         "schedule": crontab(hour=0, minute=0),
     },
-    # "file-check-every-ten-secs": {
-    #     "task": "tasks.file_tasks.queue_old_pending_document",
-    #     "schedule": 10.0,
-    # },
-    # "file-cleanup-old-results-daily": {
-    #     "task": "tasks.file_tasks.cleanup_old_results",
-    #     "schedule": crontab(hour=0, minute=0),
-    # },
 }
