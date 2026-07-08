@@ -7,6 +7,7 @@ class FileJob(BaseModel):
     id: int
     job_id: uuid.UUID
     file_id: uuid.UUID
+    user_file_id: int | None = None
     job_type: str
     status: str
     attempt_count: int
