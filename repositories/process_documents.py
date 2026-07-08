@@ -24,6 +24,7 @@ JOB_BATCH_SIZE = int(os.getenv("FILE_JOB_BATCH_SIZE", "10"))
 CLAIMABLE_STATUSES = ("pending")
 SCRAPPYS_SCRAPYARD_URL = os.getenv("SCRAPPYS_SCRAPYARD_URL", None)
 FILE_JOBS_PATH = os.getenv("FILE_JOBS_PATH", "/api/v1/file-jobs")
+FILES_PATH = os.getenv("FILES_PATH", "/api/v1/files")
 
 # file parsing and chunking settings
 ENCODING_NAME = "cl100k_base"
@@ -88,6 +89,27 @@ def update_job_status(job_id: str, new_status: str, auth_token: str) -> FileJob:
         )
 
     return updated_job
+
+
+def update_file_status(user_file_id: str, new_status: str, auth_token: str) -> dict[str, Any]:
+    scrappyard_url, _ = require_scrappyard_config()
+    url = join_url(scrappyard_url, f"{FILES_PATH}/{user_file_id}")
+
+    headers = {"Cookie": f"access_token={auth_token}"}
+    payload = {"status": new_status}
+    response = request_json(method="PATCH", url=url, headers=headers, body=payload)
+    updated_file = response[0]
+
+    if (
+        isinstance(updated_file, dict)
+        and "status" in updated_file
+        and updated_file["status"] != new_status
+    ):
+        raise RuntimeError(
+            f"Expected file {user_file_id} to be {new_status}, got {updated_file['status']}"
+        )
+
+    return updated_file if isinstance(updated_file, dict) else {}
 
 
 def extract_pdf_to_markdown(file_path: str) -> str:

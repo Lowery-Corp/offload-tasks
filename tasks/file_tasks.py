@@ -11,6 +11,7 @@ from repositories.process_documents import (
     push_chunks,
     retrieve_job,
     retrieve_jobs,
+    update_file_status,
     update_job_status,
 )
 from schemas.api_request_errors import ApiRequestError
@@ -70,6 +71,32 @@ def mark_job_error(job_id: uuid.UUID, auth_token: str) -> None:
         logger.exception("Failed to mark job as error", extra={"job_id": str(job_id)})
 
 
+def set_file_status(
+    *,
+    file_id: uuid.UUID,
+    status: str,
+    auth_token: str,
+    required: bool = True,
+) -> None:
+    try:
+        update_file_status(user_file_id=str(file_id), new_status=status, auth_token=auth_token)
+    except Exception:
+        if required:
+            raise
+        logger.warning(
+            "Optional file status update failed",
+            extra={"file_id": str(file_id), "status": status},
+            exc_info=True,
+        )
+
+
+def mark_file_error(file_id: uuid.UUID, auth_token: str) -> None:
+    try:
+        set_file_status(file_id=file_id, status="error", auth_token=auth_token)
+    except Exception:
+        logger.exception("Failed to mark file as error", extra={"file_id": str(file_id)})
+
+
 def process_file_job(
     *,
     file_id: uuid.UUID | str,
@@ -101,6 +128,7 @@ def process_file_job(
             f"Failed to push chunks for job {job_uuid}: {create_status.get('error')}"
         )
 
+    set_file_status(file_id=file_uuid, status="ready", auth_token=auth_token)
     set_job_status(job_id=job_uuid, status="chunked", auth_token=auth_token)
 
     return {
@@ -124,6 +152,7 @@ def remote_trigger(
 ) -> dict[str, Any]:
     auth_token = ""
     job_uuid: uuid.UUID | None = None
+    file_uuid: uuid.UUID | None = None
 
     try:
         job_uuid = normalize_uuid(file_job_id, "file_job_id")
@@ -163,6 +192,8 @@ def remote_trigger(
         job_id_text = str(job_uuid or file_job_id)
         if auth_token and job_uuid is not None:
             mark_job_error(job_uuid, auth_token)
+        if auth_token and file_uuid is not None:
+            mark_file_error(file_uuid, auth_token)
         retry_if_transient(self, exc)
         return {
             "ok": False,
@@ -202,6 +233,7 @@ def process_document(self: Any) -> dict[str, Any]:
             results.append({"ok": True, **result})
         except Exception as exc:
             mark_job_error(job.job_id, auth_token)
+            mark_file_error(job.file_id, auth_token)
             results.append(
                 {
                     "ok": False,
