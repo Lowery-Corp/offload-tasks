@@ -2,7 +2,6 @@ import os
 
 from openai import OpenAI, OpenAIError
 
-from schemas.api_request_errors import ApiRequestError
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -29,6 +28,6 @@ def create_embeddings(texts: list[str]) -> list[list[float]]:
             encoding_format="float",
         )
     except OpenAIError as exc:
-        raise ApiRequestError(f"OpenAI embedding request failed: {exc}") from exc
+        raise RuntimeError(f"Failed to create embeddings: {exc}") from exc
 
     return [item.embedding for item in response.data]

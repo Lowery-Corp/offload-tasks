@@ -7,11 +7,11 @@ class FileJob(BaseModel):
     id: int
     job_id: uuid.UUID
     file_id: uuid.UUID
-    user_file_id: int | None = None
     job_type: str
     status: str
     attempt_count: int
     max_attempts: int
+    user_file_id: str | None
     storage_key: str | None
     bucket_name: str | None
     queue_name: str | None

@@ -4,7 +4,12 @@ services:
       context: .
       dockerfile: Dockerfile
     working_dir: /app
-    command: celery -A worker.worker:celery_app worker --loglevel=info
+    command: >
+        watchfiles
+        "celery -A worker.worker:celery_app worker --loglevel=info"
+        /app
+    volumes:
+      - .:/app
     restart: always
     depends_on:
       offload-task-broker:

@@ -1,25 +1,18 @@
 import os
-import re
-import uuid
 import tempfile
 import hashlib
-from datetime import datetime, timedelta
-from urllib.parse import urlencode
 from typing import Any
-
+from httpx import Client
 import pymupdf4llm
 import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from helpers.dependencies import logger
-from http_request.http_helpers import request_json
-from helpers.dependencies import join_url
-from schemas.api_request_errors import ApiRequestError
+from helpers.dependencies import join_url, logger
+from helpers.http_helpers import CLIENT
 from schemas.file_job import FileJob
 from schemas.file_chunk import FileChunkCreate
 from repositories.minio import get_file_from_minio
 from repositories.openapi import create_embeddings
-
 
 JOB_BATCH_SIZE = int(os.getenv("FILE_JOB_BATCH_SIZE", "10"))
 CLAIMABLE_STATUSES = ("pending")
@@ -33,56 +26,86 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120
 
 
-def require_scrappyard_config() -> tuple[str, str]:
-    if SCRAPPYS_SCRAPYARD_URL is None:
-        raise RuntimeError("SCRAPPYS_SCRAPYARD_URL must be configured")
-    if FILE_JOBS_PATH is None:
-        raise RuntimeError("FILE_JOBS_PATH must be configured")
-    return SCRAPPYS_SCRAPYARD_URL, FILE_JOBS_PATH
+def set_job_status(
+    *,
+    job_id: str,
+    status: str,
+    required: bool = True,
+) -> None:
+    try:
+        update_job_status(job_id=str(job_id), new_status=status)
+    except Exception:
+        if required:
+            raise
+        logger.warning(
+            "Optional job status update failed",
+            extra={"job_id": str(job_id), "status": status},
+            exc_info=True,
+        )
 
 
-def retrieve_jobs(auth_token: str) -> list[FileJob]:
-    scrappyard_url, file_jobs_path = require_scrappyard_config()
-    jobs: list[FileJob] = []
-    remaining = JOB_BATCH_SIZE
-
-    queued_at = datetime.now() - timedelta(minutes=10)
-
-    query = urlencode(
-        {
-            "status": CLAIMABLE_STATUSES,
-            "limit": remaining,
-            "offset": 0,
-            "queued_before": queued_at,
-            "add_file_data": True,
-        }
-    )
-    url = f"{join_url(scrappyard_url, file_jobs_path)}?{query}"
-    headers = {"Cookie": f"access_token={auth_token}"}
-    payload: list[dict[str, Any]] = request_json(method="GET", url=url, headers=headers)[0]
-
-    jobs = [FileJob(**job) for job in payload]
-    remaining = JOB_BATCH_SIZE - len(jobs)
-
-    return jobs
+def mark_job_error(job_id: str, auth_token: str) -> None:
+    try:
+        set_job_status(job_id=job_id, status="error")
+    except Exception:
+        logger.exception("Failed to mark job as error", extra={"job_id": str(job_id)})
 
 
-def retrieve_job(job_id: str, auth_token: str) -> FileJob:
-    scrappyard_url, file_jobs_path = require_scrappyard_config()
-    url = join_url(scrappyard_url, f"{file_jobs_path}/{job_id}")
-    headers = {"Cookie": f"access_token={auth_token}"}
-    response = request_json(method="GET", url=url, headers=headers)
-    return FileJob(**response[0])
+def set_file_status(
+    *,
+    user_file_id: int | str,
+    status: str,
+    auth_token: str,
+    required: bool = True,
+) -> None:
+    try:
+        update_file_status(
+            user_file_id=str(user_file_id),
+            new_status=status,
+            auth_token=auth_token,
+        )
+    except Exception:
+        if required:
+            raise
+        logger.warning(
+            "Optional file status update failed",
+            extra={"user_file_id": str(user_file_id), "status": status},
+            exc_info=True,
+        )
 
 
-def update_job_status(job_id: str, new_status: str, auth_token: str) -> FileJob:
-    scrappyard_url, file_jobs_path = require_scrappyard_config()
-    url = join_url(scrappyard_url, f"{file_jobs_path}/{job_id}")
+def mark_file_error(user_file_id: int | str | str, auth_token: str) -> None:
+    try:
+        set_file_status(user_file_id=user_file_id, status="error", auth_token=auth_token)
+    except Exception:
+        logger.exception(
+            "Failed to mark file as error",
+            extra={"user_file_id": str(user_file_id)},
+        )
 
-    headers = {"Cookie": f"access_token={auth_token}"}
+
+def retrieve_job(job_id: str, client: Client = CLIENT) -> FileJob:
+    print("CLIENT", client.headers, flush=True)
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}")
+    print("Retrieving job:", url, flush=True)
+    response = client.get(url)
+    response.raise_for_status()
+    file_job = FileJob(**response.json())
+
+    return file_job
+
+
+def update_job_status(job_id: str, new_status: str, client: Client = CLIENT) -> FileJob:
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}")
+    print("Updating job status:", url, new_status, flush=True)
+    quit()
+
     payload = {"status": new_status}
-    response = request_json(method="PATCH", url=url, headers=headers, body=payload)
-    updated_job = FileJob(**response[0])
+    response = client.patch(url, json=payload)
+    updated_job = FileJob(**response.json())
 
     if updated_job.status != new_status:
         raise RuntimeError(
@@ -92,25 +115,16 @@ def update_job_status(job_id: str, new_status: str, auth_token: str) -> FileJob:
     return updated_job
 
 
-def update_file_status(user_file_id: str, new_status: str, auth_token: str) -> dict[str, Any]:
-    scrappyard_url, _ = require_scrappyard_config()
-    url = join_url(scrappyard_url, f"{FILES_PATH}/{user_file_id}")
+def update_file_status(user_file_id: str, new_status: str, client: Client) -> dict[str, Any]:
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILES_PATH}/{user_file_id}")
 
-    headers = {"Cookie": f"access_token={auth_token}"}
     payload = {"status": new_status}
-    response = request_json(method="PATCH", url=url, headers=headers, body=payload)
-    updated_file = response[0]
+    response = client.patch(url, json=payload)
+    response.raise_for_status()
+    updated_file = response.json()
 
-    if (
-        isinstance(updated_file, dict)
-        and "status" in updated_file
-        and updated_file["status"] != new_status
-    ):
-        raise RuntimeError(
-            f"Expected file {user_file_id} to be {new_status}, got {updated_file['status']}"
-        )
-
-    return updated_file if isinstance(updated_file, dict) else {}
+    return updated_file
 
 
 def extract_pdf_to_markdown(file_path: str) -> str:
@@ -222,7 +236,7 @@ def parse_file(
 
 
 def build_file_chunks(
-    file_id: uuid.UUID,
+    file_id: str,
     file_chunk_data: dict[str, Any],
 ) -> list[FileChunkCreate]:
 
@@ -293,4 +307,47 @@ def push_chunks(new_chunks: list[FileChunkCreate], auth_token: str) -> dict[str,
         "message": f"Pushed {created_count} chunks to the API; skipped {skipped_conflicts} existing chunks",
         "created_count": created_count,
         "skipped_conflicts": skipped_conflicts,
+    }
+
+
+def process_file_job(
+    *,
+    file_id: str,
+    file_job_id: str,
+    bucket_name: str,
+    storage_key: str,
+    user_file_id: str,
+) -> dict[str, Any]:
+    assert bucket_name, "bucket_name must be provided"
+    assert storage_key, "storage_key must be provided"
+
+    # set_job_status(job_id=file_job_id, status="processing", required=False)
+
+    # parsed_file = parse_file(bucket_name=bucket_name, storage_key=storage_key)
+
+    # set_job_status(job_id=file_job_id, status="chunking", required=False)
+    # set_job_status(job_id=file_job_id, status="embedding", required=False)
+
+    # new_chunks = build_file_chunks(file_id=file_id, file_chunk_data=parsed_file)
+    # create_status = push_chunks(new_chunks=new_chunks)
+    # if not create_status.get("ok"):
+    #     raise RuntimeError(
+    #         f"Failed to push chunks for job {file_job_id}: {create_status.get('error')}"
+    #     )
+
+    # file_status_id = user_file_id if user_file_id is not None else file_id
+    # set_file_status(user_file_id=file_status_id, status="ready")
+    # set_job_status(job_id=file_job_id, status="chunked")
+
+    # return {
+    #     "file_id": str(file_id),
+    #     "file_job_id": str(file_job_id),
+    #     "bucket_name": bucket_name,
+    #     "storage_key": storage_key,
+    #     "chunk_count": len(new_chunks),
+    #     "token_count": parsed_file.get("token_count", 0),
+    #     "final_status": "chunked",
+    # }
+    return {
+        "ok": True,
     }
