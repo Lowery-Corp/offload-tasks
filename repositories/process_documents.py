@@ -16,14 +16,14 @@ from repositories.openapi import create_embeddings
 
 JOB_BATCH_SIZE = int(os.getenv("FILE_JOB_BATCH_SIZE", "10"))
 SCRAPPYS_SCRAPYARD_URL = os.getenv("SCRAPPYS_SCRAPYARD_URL", None)
-FILE_JOBS_PATH = os.getenv("FILE_JOBS_PATH", "/api/v1/jobs")
-FILES_PATH = os.getenv("FILES_PATH", "/api/v1/file")
+FILE_JOBS_PATH = os.getenv("FILE_JOBS_PATH", "/api/v1/data/jobs")
+FILES_PATH = os.getenv("FILES_PATH", "/api/v1/data/file")
+FILE_CHUNK_PATH = os.getenv("FILE_CHUNK_PATH", "/api/v1/data/file-chunks")
 
 # file parsing and chunking settings
 ENCODING_NAME = "cl100k_base"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120
-
 
 # ################################# Object status updates ############################################################
 def update_job_status(job_id: str, new_status: str, client: Client) -> FileJob:
@@ -275,7 +275,7 @@ def push_chunks(new_chunks: list[FileChunkCreate], client: Client) -> dict[str, 
 
     for chunk in new_chunks:
         response = client.post(
-            join_url(SCRAPPYS_SCRAPYARD_URL, "/api/v1/file-chunks"),
+            join_url(SCRAPPYS_SCRAPYARD_URL, FILE_CHUNK_PATH),
             json=chunk.model_dump(),
         )
         response.raise_for_status()
@@ -292,7 +292,7 @@ def push_chunks(new_chunks: list[FileChunkCreate], client: Client) -> dict[str, 
 
 def delete_file_chunks(file_id: str, client: Client) -> dict[str, Any]:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
-    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"/api/v1/file-chunks/{file_id}")
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_CHUNK_PATH}/{file_id}")
     response = client.delete(url)
     response.raise_for_status()
     return response.json()
