@@ -1,4 +1,6 @@
 import os
+import re
+import uuid
 import tempfile
 import hashlib
 from typing import Any
@@ -15,10 +17,9 @@ from repositories.minio import get_file_from_minio
 from repositories.openapi import create_embeddings
 
 JOB_BATCH_SIZE = int(os.getenv("FILE_JOB_BATCH_SIZE", "10"))
-CLAIMABLE_STATUSES = ("pending")
 SCRAPPYS_SCRAPYARD_URL = os.getenv("SCRAPPYS_SCRAPYARD_URL", None)
-FILE_JOBS_PATH = os.getenv("FILE_JOBS_PATH", "/api/v1/file-jobs")
-FILES_PATH = os.getenv("FILES_PATH", "/api/v1/files")
+FILE_JOBS_PATH = os.getenv("FILE_JOBS_PATH", "/api/v1/jobs")
+FILES_PATH = os.getenv("FILES_PATH", "/api/v1/file")
 
 # file parsing and chunking settings
 ENCODING_NAME = "cl100k_base"
@@ -26,82 +27,11 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120
 
 
-def set_job_status(
-    *,
-    job_id: str,
-    status: str,
-    required: bool = True,
-) -> None:
-    try:
-        update_job_status(job_id=str(job_id), new_status=status)
-    except Exception:
-        if required:
-            raise
-        logger.warning(
-            "Optional job status update failed",
-            extra={"job_id": str(job_id), "status": status},
-            exc_info=True,
-        )
-
-
-def mark_job_error(job_id: str, auth_token: str) -> None:
-    try:
-        set_job_status(job_id=job_id, status="error")
-    except Exception:
-        logger.exception("Failed to mark job as error", extra={"job_id": str(job_id)})
-
-
-def set_file_status(
-    *,
-    user_file_id: int | str,
-    status: str,
-    auth_token: str,
-    required: bool = True,
-) -> None:
-    try:
-        update_file_status(
-            user_file_id=str(user_file_id),
-            new_status=status,
-            auth_token=auth_token,
-        )
-    except Exception:
-        if required:
-            raise
-        logger.warning(
-            "Optional file status update failed",
-            extra={"user_file_id": str(user_file_id), "status": status},
-            exc_info=True,
-        )
-
-
-def mark_file_error(user_file_id: int | str | str, auth_token: str) -> None:
-    try:
-        set_file_status(user_file_id=user_file_id, status="error", auth_token=auth_token)
-    except Exception:
-        logger.exception(
-            "Failed to mark file as error",
-            extra={"user_file_id": str(user_file_id)},
-        )
-
-
-def retrieve_job(job_id: str, client: Client = CLIENT) -> FileJob:
-    print("CLIENT", client.headers, flush=True)
-    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
-
-    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}")
-    print("Retrieving job:", url, flush=True)
-    response = client.get(url)
-    response.raise_for_status()
-    file_job = FileJob(**response.json())
-
-    return file_job
-
-
+# ################################# Object status updates ############################################################
 def update_job_status(job_id: str, new_status: str, client: Client = CLIENT) -> FileJob:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}")
     print("Updating job status:", url, new_status, flush=True)
-    quit()
 
     payload = {"status": new_status}
     response = client.patch(url, json=payload)
@@ -115,9 +45,9 @@ def update_job_status(job_id: str, new_status: str, client: Client = CLIENT) -> 
     return updated_job
 
 
-def update_file_status(user_file_id: str, new_status: str, client: Client) -> dict[str, Any]:
+def update_file_status(file_id: str, new_status: str, client: Client = CLIENT) -> dict[str, Any]:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
-    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILES_PATH}/{user_file_id}")
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILES_PATH}/{file_id}")
 
     payload = {"status": new_status}
     response = client.patch(url, json=payload)
@@ -126,6 +56,68 @@ def update_file_status(user_file_id: str, new_status: str, client: Client) -> di
 
     return updated_file
 
+
+def update_file_and_job_status(
+    file_id: str,
+    job_id: str,
+    new_job_status: str | None = None,
+    new_file_status: str | None = None,
+    client: Client = CLIENT
+) -> bool:
+    updated_file = None
+    updated_job = None
+    if new_file_status:
+        updated_file = update_file_status(file_id=file_id, new_status=new_file_status, client=client)
+    if new_job_status:
+        updated_job = update_job_status(job_id=job_id, new_status=new_job_status, client=client)
+
+    logger.info(f"Updated file and job status for job {job_id}: file_status={updated_file.get('status') if updated_file else 'N/A'}, job_status={updated_job.status if updated_job else 'N/A'}")
+    return True
+
+
+def update_attempt_count(job_id: str, client: Client = CLIENT) -> FileJob:
+    logger.info(f"Incrementing attempt count for job {job_id}")
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}/increment_attempts")
+    logger.info(f"Sending POST request to {url}")
+    response = client.patch(url)
+    response.raise_for_status()
+    updated_job = FileJob(**response.json())
+    return updated_job
+# #############################################################################################
+# ################################# retrieve objects ############################################################
+
+def retrieve_job(job_id: str, client: Client = CLIENT) -> FileJob:
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}")
+    response = client.get(url)
+    response.raise_for_status()
+    file_job = FileJob(**response.json())
+    return file_job
+
+
+def retrieve_old_jobs( status: list[str], client: Client = CLIENT, limit: int = 10) -> list[str]:
+    print(f"Retrieving old jobs with status '{status}' and limit {limit}", flush=True)
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    params: dict[str, Any] = {"status": status, "limit": limit}
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/list")
+    response = client.get(url, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
+def retrieve_file(file_id: str, client: Client = CLIENT) -> dict[str, Any]:
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILES_PATH}/{file_id}")
+    response = client.get(url)
+    response.raise_for_status()
+    response_data = dict(response.json())
+    if not isinstance(response_data.get("files"), list) or not response_data.get("files"):
+        raise ValueError(f"Expected 'files' to be a non-empty list in the response for file_id {file_id}")
+    file_data = response_data.get("files", [])[0]
+    return file_data
+# #############################################################################################
+# ################################# File processing ############################################################
 
 def extract_pdf_to_markdown(file_path: str) -> str:
     return pymupdf4llm.to_markdown(file_path)
@@ -169,6 +161,8 @@ def split_markdown(markdown_text: str) -> list[str]:
             "\n",
             " ",
             "",
+            ". ",
+            ".",
         ],
     )
 
@@ -187,8 +181,6 @@ def parse_file(
     if not job_file.get("ok"):
         logger.error(f"Failed to retrieve file from MinIO: {job_file.get('error')}")
         raise Exception(f"Failed to retrieve file from MinIO: {job_file.get('error')}")
-
-    logger.info(f"Parsing file from bucket '{bucket_name}' with storage key '{storage_key}'")
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp_file:
         file_data = job_file.get("file_data")
@@ -277,29 +269,27 @@ def build_file_chunks(
     return file_chunks
 
 
-def push_chunks(new_chunks: list[FileChunkCreate], auth_token: str) -> dict[str, Any]:
-    scrappyard_url, _ = require_scrappyard_config()
+def delete_file_chunks(file_id: str, client: Client = CLIENT) -> dict[str, Any]:
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"/api/v1/file-chunks/{file_id}")
+    response = client.delete(url)
+    response.raise_for_status()
+    return response.json()
+
+# #############################################################################################
+# ############################### Data Updates ##############################################################
+
+def push_chunks(new_chunks: list[FileChunkCreate], client: Client) -> dict[str, Any]:
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     skipped_conflicts = 0
 
     for chunk in new_chunks:
-        try:
-            request_json(
-                method="POST",
-                url=join_url(scrappyard_url, "/api/v1/file-chunks"),
-                headers={"Cookie": f"access_token={auth_token}"},
-                body=chunk.model_dump(),
-            )
-        except ApiRequestError as exc:
-            if exc.status_code != 409:
-                raise
-            skipped_conflicts += 1
-            logger.info(
-                "File chunk already exists; skipping duplicate create",
-                extra={
-                    "file_id": chunk.file_id,
-                    "chunk_index": chunk.chunk_index,
-                },
-            )
+        response = client.post(
+            join_url(SCRAPPYS_SCRAPYARD_URL, "/api/v1/file-chunks"),
+            json=chunk.model_dump(),
+        )
+        response.raise_for_status()
+
 
     created_count = len(new_chunks) - skipped_conflicts
     return {
@@ -309,6 +299,44 @@ def push_chunks(new_chunks: list[FileChunkCreate], auth_token: str) -> dict[str,
         "skipped_conflicts": skipped_conflicts,
     }
 
+# #############################################################################################
+# ############################### Main ##############################################################
+
+def run_jobs(file_job_ids: list[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for file_job_id in file_job_ids:
+        updating_attempts = update_attempt_count(job_id=file_job_id)
+        assert updating_attempts is not None, f"Failed to update attempt count for job {file_job_id}"
+
+        current_job = retrieve_job(job_id=file_job_id)
+        file_id = str(current_job.file_id)
+
+        try:
+            delete_file_chunks(file_id=file_id)
+        except Exception as e:
+            pass
+
+        file = retrieve_file(file_id=file_id)
+        storage_key = file.get("storage_key", None)
+        user_id = file.get("user_id", None)
+
+        if not storage_key:
+            logger.error(f"File {file_id} does not have a valid storage_key")
+            raise ValueError(f"File {file_id} does not have a valid storage_key")
+        if not user_id:
+            logger.error(f"File {file_id} does not have a valid user_id")
+            raise ValueError(f"File {file_id} does not have a valid user_id")
+
+        result = process_file_job(
+            file_id=file_id,
+            file_job_id=file_job_id,
+            bucket_name=f"user-{user_id}-bucket",
+            storage_key=storage_key,
+        )
+        results.append(result)
+
+    return results
+
 
 def process_file_job(
     *,
@@ -316,38 +344,85 @@ def process_file_job(
     file_job_id: str,
     bucket_name: str,
     storage_key: str,
-    user_file_id: str,
 ) -> dict[str, Any]:
     assert bucket_name, "bucket_name must be provided"
     assert storage_key, "storage_key must be provided"
 
-    # set_job_status(job_id=file_job_id, status="processing", required=False)
+    update_file_and_job_status(
+        file_id=file_id,
+        job_id=file_job_id,
+        new_file_status="processing",
+        new_job_status="processing",
+    )
 
-    # parsed_file = parse_file(bucket_name=bucket_name, storage_key=storage_key)
+    try:
+        parsed_file = parse_file(bucket_name=bucket_name, storage_key=storage_key)
+        logger.info(f"Parsed file job {file_job_id}: {parsed_file.get('chunk_count', 0)} chunks, {parsed_file.get('token_count', 0)} tokens")
+    except Exception as e:
+        logger.error(f"Error parsing file for job {file_job_id}: {e}")
+        update_file_and_job_status(
+            file_id=file_id,
+            job_id=file_job_id,
+            new_file_status="error",
+            new_job_status="error",
+        )
+        raise ValueError(f"Error parsing file for job {file_job_id}: {e}")
 
-    # set_job_status(job_id=file_job_id, status="chunking", required=False)
-    # set_job_status(job_id=file_job_id, status="embedding", required=False)
+    update_file_and_job_status(
+        file_id=file_id,
+        job_id=file_job_id,
+        new_file_status="parsed"
+    )
 
-    # new_chunks = build_file_chunks(file_id=file_id, file_chunk_data=parsed_file)
-    # create_status = push_chunks(new_chunks=new_chunks)
-    # if not create_status.get("ok"):
-    #     raise RuntimeError(
-    #         f"Failed to push chunks for job {file_job_id}: {create_status.get('error')}"
-    #     )
+    try:
+        new_chunks = build_file_chunks(file_id=file_id, file_chunk_data=parsed_file)
+        logger.info(f"Built {len(new_chunks)} new chunks for job {file_job_id}")
+    except Exception as e:
+        logger.error(f"Error building file chunks for job {file_job_id}: {e}")
+        update_file_and_job_status(
+            file_id=file_id,
+            job_id=file_job_id,
+            new_file_status="error",
+            new_job_status="error"
+        )
+        raise ValueError(f"Error building file chunks for job {file_job_id}: {e}")
 
-    # file_status_id = user_file_id if user_file_id is not None else file_id
-    # set_file_status(user_file_id=file_status_id, status="ready")
-    # set_job_status(job_id=file_job_id, status="chunked")
+    update_file_and_job_status(
+        file_id=file_id,
+        job_id=file_job_id,
+        new_job_status="chunking"
+    )
 
-    # return {
-    #     "file_id": str(file_id),
-    #     "file_job_id": str(file_job_id),
-    #     "bucket_name": bucket_name,
-    #     "storage_key": storage_key,
-    #     "chunk_count": len(new_chunks),
-    #     "token_count": parsed_file.get("token_count", 0),
-    #     "final_status": "chunked",
-    # }
+    try:
+        create_status = push_chunks(new_chunks=new_chunks, client=CLIENT)
+        logger.info(f"Pushed chunks for job {file_job_id}: {create_status.get('message')}")
+    except Exception as e:
+        logger.error(f"Error pushing chunks for job {file_job_id}: {e}")
+        update_file_and_job_status(
+            file_id=file_id,
+            job_id=file_job_id,
+            new_file_status="error",
+            new_job_status="error"
+        )
+        raise RuntimeError(f"Error pushing chunks for job {file_job_id}: {e}")
+
+    update_file_and_job_status(
+        file_id=file_id,
+        job_id=file_job_id,
+        new_file_status="chunked",
+        new_job_status="finished"
+    )
+
     return {
         "ok": True,
+        "message": f"Processed file job {file_job_id} successfully",
+        "file_id": str(file_id),
+        "file_job_id": str(file_job_id),
+        "bucket_name": bucket_name,
+        "storage_key": storage_key,
+        "chunk_count": len(new_chunks),
+        "token_count": parsed_file.get("token_count", 0),
+        "final_status": "chunked",
     }
+
+# #############################################################################################

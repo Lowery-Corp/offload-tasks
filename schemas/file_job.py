@@ -11,9 +11,6 @@ class FileJob(BaseModel):
     status: str
     attempt_count: int
     max_attempts: int
-    user_file_id: str | None
-    storage_key: str | None
-    bucket_name: str | None
     queue_name: str | None
     worker_id: str | None
     error_message: str | None
