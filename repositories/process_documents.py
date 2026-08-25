@@ -9,7 +9,6 @@ import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from helpers.dependencies import join_url, logger
-from helpers.http_helpers import get_client
 from schemas.file_job import FileJob
 from schemas.file_chunk import FileChunkCreate
 from repositories.minio import get_file_from_minio
@@ -301,7 +300,10 @@ def delete_file_chunks(file_id: str, client: Client) -> dict[str, Any]:
 # #############################################################################################
 # ############################### Main ##############################################################
 
-def run_jobs(file_job_ids: list[str], http_client: Client) -> list[dict[str, Any]]:
+def run_jobs(
+    file_job_ids: list[str],
+    http_client: Client
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for file_job_id in file_job_ids:
         updating_attempts = update_attempt_count(job_id=file_job_id, client=http_client)
@@ -424,7 +426,7 @@ def process_file_job(
     update_file_and_job_status(
         file_id=file_id,
         job_id=file_job_id,
-        new_file_status="chunked",
+        new_file_status="ready",
         new_job_status="finished",
         client=http_client
     )
@@ -438,7 +440,6 @@ def process_file_job(
         "storage_key": storage_key,
         "chunk_count": len(new_chunks),
         "token_count": parsed_file.get("token_count", 0),
-        "final_status": "chunked",
     }
 
 # #############################################################################################
