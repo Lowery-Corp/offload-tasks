@@ -1,6 +1,5 @@
 import os
 import re
-import uuid
 import tempfile
 import hashlib
 from typing import Any
@@ -10,7 +9,7 @@ import tiktoken
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from helpers.dependencies import join_url, logger
-from helpers.http_helpers import CLIENT
+from helpers.http_helpers import get_client
 from schemas.file_job import FileJob
 from schemas.file_chunk import FileChunkCreate
 from repositories.minio import get_file_from_minio
@@ -28,7 +27,7 @@ CHUNK_OVERLAP = 120
 
 
 # ################################# Object status updates ############################################################
-def update_job_status(job_id: str, new_status: str, client: Client = CLIENT) -> FileJob:
+def update_job_status(job_id: str, new_status: str, client: Client) -> FileJob:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}")
     print("Updating job status:", url, new_status, flush=True)
@@ -45,7 +44,7 @@ def update_job_status(job_id: str, new_status: str, client: Client = CLIENT) -> 
     return updated_job
 
 
-def update_file_status(file_id: str, new_status: str, client: Client = CLIENT) -> dict[str, Any]:
+def update_file_status(file_id: str, new_status: str, client: Client) -> dict[str, Any]:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILES_PATH}/{file_id}")
 
@@ -60,9 +59,9 @@ def update_file_status(file_id: str, new_status: str, client: Client = CLIENT) -
 def update_file_and_job_status(
     file_id: str,
     job_id: str,
+    client: Client,
     new_job_status: str | None = None,
     new_file_status: str | None = None,
-    client: Client = CLIENT
 ) -> bool:
     updated_file = None
     updated_job = None
@@ -75,7 +74,7 @@ def update_file_and_job_status(
     return True
 
 
-def update_attempt_count(job_id: str, client: Client = CLIENT) -> FileJob:
+def update_attempt_count(job_id: str, client: Client) -> FileJob:
     logger.info(f"Incrementing attempt count for job {job_id}")
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}/increment_attempts")
@@ -87,7 +86,7 @@ def update_attempt_count(job_id: str, client: Client = CLIENT) -> FileJob:
 # #############################################################################################
 # ################################# retrieve objects ############################################################
 
-def retrieve_job(job_id: str, client: Client = CLIENT) -> FileJob:
+def retrieve_job(job_id: str, client: Client) -> FileJob:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/{job_id}")
     response = client.get(url)
@@ -96,8 +95,7 @@ def retrieve_job(job_id: str, client: Client = CLIENT) -> FileJob:
     return file_job
 
 
-def retrieve_old_jobs( status: list[str], client: Client = CLIENT, limit: int = 10) -> list[str]:
-    print(f"Retrieving old jobs with status '{status}' and limit {limit}", flush=True)
+def retrieve_old_jobs( status: list[str], client: Client, limit: int = 10) -> list[str]:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     params: dict[str, Any] = {"status": status, "limit": limit}
     url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILE_JOBS_PATH}/list")
@@ -106,7 +104,7 @@ def retrieve_old_jobs( status: list[str], client: Client = CLIENT, limit: int = 
     return response.json()
 
 
-def retrieve_file(file_id: str, client: Client = CLIENT) -> dict[str, Any]:
+def retrieve_file(file_id: str, client: Client) -> dict[str, Any]:
     assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
     url = join_url(SCRAPPYS_SCRAPYARD_URL, f"{FILES_PATH}/{file_id}")
     response = client.get(url)
@@ -151,18 +149,19 @@ def get_content_hash(text: str) -> str:
 def split_markdown(markdown_text: str) -> list[str]:
     splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
         encoding_name=ENCODING_NAME,
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
+        chunk_size=200,
+        chunk_overlap=40,
         separators=[
             "\n## ",
             "\n### ",
             "\n#### ",
             "\n\n",
             "\n",
+            ". ",
+            "? ",
+            "! ",
             " ",
             "",
-            ". ",
-            ".",
         ],
     )
 
@@ -268,14 +267,6 @@ def build_file_chunks(
 
     return file_chunks
 
-
-def delete_file_chunks(file_id: str, client: Client = CLIENT) -> dict[str, Any]:
-    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
-    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"/api/v1/file-chunks/{file_id}")
-    response = client.delete(url)
-    response.raise_for_status()
-    return response.json()
-
 # #############################################################################################
 # ############################### Data Updates ##############################################################
 
@@ -299,24 +290,41 @@ def push_chunks(new_chunks: list[FileChunkCreate], client: Client) -> dict[str, 
         "skipped_conflicts": skipped_conflicts,
     }
 
+
+def delete_file_chunks(file_id: str, client: Client) -> dict[str, Any]:
+    assert SCRAPPYS_SCRAPYARD_URL is not None, "SCRAPPYS_SCRAPYARD_URL must be configured"
+    url = join_url(SCRAPPYS_SCRAPYARD_URL, f"/api/v1/file-chunks/{file_id}")
+    response = client.delete(url)
+    response.raise_for_status()
+    return response.json()
+
 # #############################################################################################
 # ############################### Main ##############################################################
 
-def run_jobs(file_job_ids: list[str]) -> list[dict[str, Any]]:
+def run_jobs(file_job_ids: list[str], http_client: Client) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for file_job_id in file_job_ids:
-        updating_attempts = update_attempt_count(job_id=file_job_id)
+        updating_attempts = update_attempt_count(job_id=file_job_id, client=http_client)
         assert updating_attempts is not None, f"Failed to update attempt count for job {file_job_id}"
 
-        current_job = retrieve_job(job_id=file_job_id)
+        current_job = retrieve_job(job_id=file_job_id, client=http_client)
         file_id = str(current_job.file_id)
 
         try:
-            delete_file_chunks(file_id=file_id)
+            deleted_status = delete_file_chunks(file_id=file_id, client=http_client)
+            logger.info(f"Deleted existing chunks for file {file_id}: {deleted_status.get('message')}")
         except Exception as e:
-            pass
+            update_file_and_job_status(
+                file_id=file_id,
+                job_id=file_job_id,
+                new_file_status="error",
+                new_job_status="error",
+                client=http_client
+            )
+            logger.info(f"Failed to delete existing chunks for file {file_id}: {e}")
+            raise RuntimeError(f"Failed to delete existing chunks for file {file_id}: {e}")
 
-        file = retrieve_file(file_id=file_id)
+        file = retrieve_file(file_id=file_id, client=http_client)
         storage_key = file.get("storage_key", None)
         user_id = file.get("user_id", None)
 
@@ -332,9 +340,9 @@ def run_jobs(file_job_ids: list[str]) -> list[dict[str, Any]]:
             file_job_id=file_job_id,
             bucket_name=f"user-{user_id}-bucket",
             storage_key=storage_key,
+            http_client=http_client
         )
         results.append(result)
-
     return results
 
 
@@ -344,6 +352,7 @@ def process_file_job(
     file_job_id: str,
     bucket_name: str,
     storage_key: str,
+    http_client: Client,
 ) -> dict[str, Any]:
     assert bucket_name, "bucket_name must be provided"
     assert storage_key, "storage_key must be provided"
@@ -353,6 +362,7 @@ def process_file_job(
         job_id=file_job_id,
         new_file_status="processing",
         new_job_status="processing",
+        client=http_client
     )
 
     try:
@@ -365,13 +375,15 @@ def process_file_job(
             job_id=file_job_id,
             new_file_status="error",
             new_job_status="error",
+            client=http_client,
         )
         raise ValueError(f"Error parsing file for job {file_job_id}: {e}")
 
     update_file_and_job_status(
         file_id=file_id,
         job_id=file_job_id,
-        new_file_status="parsed"
+        new_file_status="parsed",
+        client=http_client,
     )
 
     try:
@@ -383,18 +395,20 @@ def process_file_job(
             file_id=file_id,
             job_id=file_job_id,
             new_file_status="error",
-            new_job_status="error"
+            new_job_status="error",
+            client=http_client,
         )
         raise ValueError(f"Error building file chunks for job {file_job_id}: {e}")
 
     update_file_and_job_status(
         file_id=file_id,
         job_id=file_job_id,
-        new_job_status="chunking"
+        new_job_status="chunking",
+        client=http_client,
     )
 
     try:
-        create_status = push_chunks(new_chunks=new_chunks, client=CLIENT)
+        create_status = push_chunks(new_chunks=new_chunks, client=http_client)
         logger.info(f"Pushed chunks for job {file_job_id}: {create_status.get('message')}")
     except Exception as e:
         logger.error(f"Error pushing chunks for job {file_job_id}: {e}")
@@ -402,7 +416,8 @@ def process_file_job(
             file_id=file_id,
             job_id=file_job_id,
             new_file_status="error",
-            new_job_status="error"
+            new_job_status="error",
+            client=http_client,
         )
         raise RuntimeError(f"Error pushing chunks for job {file_job_id}: {e}")
 
@@ -410,7 +425,8 @@ def process_file_job(
         file_id=file_id,
         job_id=file_job_id,
         new_file_status="chunked",
-        new_job_status="finished"
+        new_job_status="finished",
+        client=http_client
     )
 
     return {

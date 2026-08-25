@@ -2,6 +2,7 @@ import socket
 from datetime import datetime, timezone
 from typing import Any
 
+from helpers.http_helpers import get_client
 from helpers.dependencies import logger
 from repositories.process_documents import (
     run_jobs,
@@ -46,10 +47,16 @@ def remote_trigger(
 @celery_app.task(name="tasks.file_tasks.queue_old_pending_document", bind=True, max_retries=3)  # type: ignore
 def process_document(self: Any) -> dict[str, Any]:
     statuses_to_process = ["pending", "queued", "error"]
-    old_jobs_ids = retrieve_old_jobs(status=statuses_to_process, limit=10)
+    http_client = get_client()
+    try:
+        old_jobs_ids = retrieve_old_jobs(status=statuses_to_process, limit=10, client=http_client)
 
-    result = run_jobs(file_job_ids=old_jobs_ids)
-    logger.info("Processed claimable file jobs", extra={"result": result})
+        result = run_jobs(file_job_ids=old_jobs_ids, http_client=http_client)
+        logger.info("Processed claimable file jobs", extra={"result": result})
+    except Exception as e:
+        logger.error("Error processing old pending documents", extra={"error": str(e)})
+    finally:
+        http_client.close()
     return {}
 
 
