@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     working_dir: /app
     command: >
         watchfiles
@@ -24,6 +25,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     working_dir: /app
     command: celery -A worker.beat:celery_app beat --loglevel=info
     restart: always
@@ -39,6 +41,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     working_dir: /app
     command: celery -A worker.celery_app flower --port=5555
     env_file:
